@@ -32,6 +32,7 @@ ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 # per-image limit, so this only guards the server's disk and memory.
 MAX_UPLOAD_MB = 200
 MIN_TOKEN_LENGTH = 16
+REQUIRE_TOKEN_ALWAYS = 1
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
