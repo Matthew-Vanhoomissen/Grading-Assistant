@@ -86,7 +86,7 @@ function outputsMatch(actual, expected, exact) {
 const assignments = new Map()
 const questions = new Map()
 const testCases = new Map()
-const submissions = new Map() // id -> { createdAt, scenario, questionId, label }
+const submissions = new Map() // id -> { createdAt, scenario, questionId, label, finalScore, notes }
 let nextAssignmentId = 1
 let nextQuestionId = 1
 let nextTestId = 1
@@ -132,21 +132,36 @@ function insertTestCase(questionId, { input = '', expected_output }) {
   return row
 }
 
-// Seed one assignment with three questions (one untitled, to exercise the
-// "Question N" fallback) and some finished submissions.
+// Seed two assignments. Homework 1 has three questions (one untitled, to
+// exercise the "Question N" fallback). Submissions with a final score count as
+// graded, so the gradebook has full scores and each kind of n/a.
 const seeded = insertAssignment({ title: 'Homework 1 (mock)' })
 const q1 = insertQuestion(seeded.id, { title: 'Add two numbers', prompt: 'Read two ints on one line, print their sum.', max_points: 10 })
 insertTestCase(q1.id, { input: '2 3\n', expected_output: '5\n' })
 insertTestCase(q1.id, { input: '-1 1\n', expected_output: '0\n' })
 const q2 = insertQuestion(seeded.id, { title: 'Average of a list', prompt: 'Print the average of [1, 2, 3].', max_points: 5 })
 insertTestCase(q2.id, { input: '', expected_output: '2.0\n' })
-insertQuestion(seeded.id, { title: '', prompt: '', max_points: 2 })
-for (const [label, name, questionId] of [
+const q3 = insertQuestion(seeded.id, { title: '', prompt: '', max_points: 2 })
+const seeded2 = insertAssignment({ title: 'Homework 2 (mock)' })
+const h2q1 = insertQuestion(seeded2.id, { title: 'Print five', prompt: 'Print 5.', max_points: 4 })
+insertTestCase(h2q1.id, { input: '', expected_output: '5\n' })
+for (const [label, name, questionId, finalScore = null] of [
   ['sample_01', 'ready_plain', q1.id],
   ['sample_03', 'error', q1.id],
   ['sample_02', 'ready_corrected', q2.id],
+  ['S001', 'ready_plain', q1.id, 10], // fully graded on both assignments
+  ['S001', 'ready_corrected', q2.id, 4],
+  ['S001', 'ready_plain', q3.id, 1.5],
+  ['S001', 'ready_plain', h2q1.id, 4],
+  ['S002', 'ready_plain', q1.id, 5], // Q2 not graded, Q3 not submitted
+  ['S002', 'ready_corrected', q2.id],
+  ['s003 ', 'ready_plain', h2q1.id, 3], // label differs in case/space from S003 below
+  ['S003', 'ready_plain', q1.id, 7], // two photos for Q2
+  ['S003', 'ready_corrected', q2.id],
+  ['S003', 'ready_corrected', q2.id],
+  ['S003', 'ready_plain', q3.id, 2],
 ]) {
-  submissions.set(nextSubmissionId++, { createdAt: 0, scenario: name, questionId, label })
+  submissions.set(nextSubmissionId++, { createdAt: 0, scenario: name, questionId, label, finalScore })
 }
 
 export function setScenario(name) {
@@ -330,27 +345,29 @@ function buildSubmission(id, sub) {
   if (elapsed < QUEUED_MS) state = { status: 'queued', ...PENDING }
   else if (elapsed < QUEUED_MS + PROCESSING_MS) state = { status: 'processing', ...PENDING }
   else state = FINAL[sub.scenario]
+  // Once processing is done, a final score makes it graded (the backend sets status on grade).
+  const graded = sub.finalScore != null && !['queued', 'processing'].includes(state.status)
 
   const question = questions.get(sub.questionId) ?? null
   const assignment = question ? assignmentRow(assignments.get(question.assignment_id)) : null
-  const graded = runMockTests(id, question, state.run)
+  const results = runMockTests(id, question, state.run)
   return {
     id,
     question_id: sub.questionId,
     student_label: sub.label,
-    status: state.status,
+    status: graded ? 'graded' : state.status,
     transcription: state.transcription,
     corrected_code: state.corrected_code,
     flags: state.flags,
     error_message: state.error_message,
-    verdict: graded.verdict,
-    suggested_score: graded.suggested_score,
-    final_score: null,
-    notes: null,
+    verdict: results.verdict,
+    suggested_score: results.suggested_score,
+    final_score: graded ? sub.finalScore : null,
+    notes: sub.notes ?? null,
     question,
     assignment,
-    test_results: graded.test_results,
-    score_reasoning: graded.score_reasoning,
+    test_results: results.test_results,
+    score_reasoning: results.score_reasoning,
   }
 }
 
@@ -381,6 +398,21 @@ export async function getSubmission(id) {
   return { status: 200, body: buildSubmission(Number(id), sub) }
 }
 
+// Like the backend: final_score must be a number; notes is overwritten
+// (missing -> null); status becomes "graded". Returns the full submission.
+export async function gradeSubmission(id, fields) {
+  await delay(150)
+  const url = `/api/submissions/${id}/grade`
+  const sub = or404(submissions, 'POST', url, id)
+  const score = Number(fields.final_score)
+  if (fields.final_score == null || fields.final_score === '' || Number.isNaN(score)) {
+    throw fail('POST', url, 400, 'final_score must be a number')
+  }
+  sub.finalScore = score
+  sub.notes = fields.notes ?? null
+  return { status: 200, body: buildSubmission(Number(id), sub) }
+}
+
 export async function deleteSubmission(id) {
   await delay(150)
   submissions.delete(Number(id))
@@ -392,3 +424,90 @@ export function imageUrl(id) {
   return IMAGES[sub?.scenario ?? 'ready_plain']
 }
 
+// Gradebook, mirroring backend/gradebook.py: a cell sums final scores and is
+// n/a (score null, with a reason) unless every question has exactly one
+// graded submission. Students are matched by label, ignoring case and
+// surrounding spaces.
+
+const roundPoints = (n) => Math.round(n * 100) / 100
+const naturalKey = (text) => text.toLowerCase().split(/(\d+)/).map((p, i) => (i % 2 ? Number(p) : p))
+function naturalCompare(a, b) {
+  const ka = naturalKey(a)
+  const kb = naturalKey(b)
+  for (let i = 0; i < Math.min(ka.length, kb.length); i++) {
+    if (ka[i] < kb[i]) return -1
+    if (ka[i] > kb[i]) return 1
+  }
+  return ka.length - kb.length
+}
+
+function gradebookCell(qs, subsByQuestion) {
+  if (!qs.some((q) => subsByQuestion.get(q.id)?.length)) return { score: null, reason: 'No submissions' }
+  let total = 0
+  const problems = []
+  for (const q of qs) {
+    const subs = subsByQuestion.get(q.id) ?? []
+    const name = `Q${q.position}`
+    if (subs.length === 0) problems.push(`${name} not submitted`)
+    else if (subs.length > 1) problems.push(`${subs.length} photos for ${name}`)
+    else if (subs[0].status !== 'graded' || subs[0].final_score == null) problems.push(`${name} not graded`)
+    else total += subs[0].final_score
+  }
+  return problems.length ? { score: null, reason: problems.join('; ') } : { score: roundPoints(total), reason: null }
+}
+
+function buildGradebook(assignmentIds) {
+  const shown = [...assignments.values()]
+    .map(assignmentRow)
+    .filter((a) => a.question_count && (!assignmentIds?.length || assignmentIds.includes(a.id)))
+  // student key -> assignment id -> question id -> [submission]
+  const byStudent = new Map()
+  const labels = new Map()
+  for (const [id, sub] of submissions) {
+    const key = sub.label.trim().toLowerCase()
+    const question = questions.get(sub.questionId)
+    if (!key || !question) continue
+    if (!labels.has(key)) labels.set(key, sub.label.trim())
+    if (!byStudent.has(key)) byStudent.set(key, new Map())
+    const perAssignment = byStudent.get(key)
+    if (!perAssignment.has(question.assignment_id)) perAssignment.set(question.assignment_id, new Map())
+    const perQuestion = perAssignment.get(question.assignment_id)
+    if (!perQuestion.has(question.id)) perQuestion.set(question.id, [])
+    perQuestion.get(question.id).push(buildSubmission(id, sub))
+  }
+  const titles = shown.map((a) => a.title)
+  const columns = shown.map((a) => ({
+    assignment_id: a.id,
+    header: titles.filter((t) => t === a.title).length === 1 ? a.title : `${a.title} (#${a.id})`,
+    max_points: roundPoints(a.total_points),
+  }))
+  const rows = [...byStudent.keys()]
+    .filter((k) => shown.some((a) => byStudent.get(k).has(a.id)))
+    .sort((a, b) => naturalCompare(labels.get(a), labels.get(b)))
+    .map((k) => ({
+      student: labels.get(k),
+      cells: shown.map((a) => gradebookCell(questionsOf(a.id), byStudent.get(k).get(a.id) ?? new Map())),
+    }))
+  return { columns, rows }
+}
+
+export async function getGradebook(assignmentIds) {
+  await delay(150)
+  return { status: 200, body: buildGradebook(assignmentIds) }
+}
+
+// Same layout as backend/gradebook.py to_csv, as a data: URL since there is
+// no server to download from. n/a cells are empty.
+export function gradebookCsvUrl(assignmentIds) {
+  const grid = buildGradebook(assignmentIds)
+  const safe = (text) => (/^[=+\-@\t\r]/.test(String(text)) ? `'${text}` : String(text))
+  const field = (v) => (/[",\n\r]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v))
+  const lines = [
+    ['Student', ...grid.columns.map((c) => safe(c.header))],
+    ['Max points', ...grid.columns.map((c) => c.max_points)],
+    ...grid.rows.map((r) => [safe(r.student), ...r.cells.map((c) => (c.score == null ? '' : c.score))]),
+  ]
+  const csv = lines.map((row) => row.map(field).join(',')).join('\n') + '\n'
+  // The BOM makes Excel read the file as UTF-8, like the backend's CSV.
+  return `data:text/csv;charset=utf-8,${encodeURIComponent('\ufeff' + csv)}`
+}

@@ -17,9 +17,9 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, abort, jsonify, request, send_file
+from flask import Flask, Response, abort, jsonify, request, send_file
 
-from backend import db, worker
+from backend import db, gradebook, worker
 from backend.pipeline import rerun_submission, rescore_question
 from backend.scoring import suggest_score
 
@@ -340,6 +340,39 @@ def grade(submission_id):
 def delete_submission(submission_id):
     _delete_upload(db.delete_submission(submission_id))
     return "", 204
+
+
+# Gradebook
+
+def _assignment_filter():
+    """Ids from ?assignment_ids=1,2, None for all. Raises ValueError."""
+    raw = request.args.get("assignment_ids")
+    if not raw:
+        return None
+    return {int(part) for part in raw.split(",") if part.strip()}
+
+
+@app.get("/api/gradebook")
+def get_gradebook():
+    try:
+        ids = _assignment_filter()
+    except ValueError:
+        return _bad_request("assignment_ids must be comma-separated integers")
+    return jsonify(gradebook.build(ids))
+
+
+@app.get("/api/gradebook.csv")
+def download_gradebook():
+    try:
+        ids = _assignment_filter()
+    except ValueError:
+        return _bad_request("assignment_ids must be comma-separated integers")
+    # The BOM makes Excel read the file as UTF-8.
+    return Response(
+        "﻿" + gradebook.to_csv(gradebook.build(ids)),
+        mimetype="text/csv",
+        headers={"Content-Disposition":
+                 "attachment; filename=gradebook.csv"})
 
 
 def config_error(host, token):

@@ -301,6 +301,22 @@ def delete_submission(submission_id):
     return images[0] if images else None
 
 
+def list_gradebook_submissions():
+    """Every submission's label, grade state, and where it belongs."""
+    with connect() as conn:
+        return _rows(conn.execute(
+            "SELECT s.student_label, s.status, s.final_score,"
+            " q.id AS question_id, q.assignment_id"
+            " FROM submissions s JOIN questions q ON q.id = s.question_id"
+            " ORDER BY s.id"))
+
+
+def list_all_questions():
+    with connect() as conn:
+        return _rows(conn.execute(
+            "SELECT * FROM questions ORDER BY assignment_id, position, id"))
+
+
 def claim_next_queued():
     """Atomically move the oldest queued submission to processing."""
     with connect() as conn:

@@ -75,12 +75,37 @@ and submissions (one photo per student per question). SQLite, five tables:
 | POST | `/api/submissions/<id>/rerun` | `{code}` |
 | POST | `/api/submissions/<id>/requeue` | |
 | POST | `/api/submissions/<id>/grade` | `{final_score, notes?}` |
+| GET | `/api/gradebook`, `/api/gradebook.csv` | optional `?assignment_ids=1,2` |
 
 Deleting an assignment or question also deletes everything under it,
 including uploaded photos. Changing a question's `max_points` or
 `exact_match` re-scores its submissions from the stored outputs (no code is
-re-run); final scores already given are kept. CSV export is not implemented
-yet.
+re-run); final scores already given are kept.
+
+### Gradebook
+
+One row per student, one column per assignment (Canvas style), with a
+`Max points` row first. A cell is the sum of the student's final scores on
+that assignment's questions; suggested scores never count. Students are
+matched by `student_label`, ignoring case and surrounding spaces, so labels
+must be consistent across questions.
+
+A cell is n/a when a question has no graded submission for that student, or
+more than one. In the JSON its `score` is `null` and `reason` says why (e.g.
+`"Q2 not graded; Q3 not submitted"`, `"2 photos for Q1"`). In the CSV n/a
+cells are empty, so a spreadsheet or Canvas treats them as "no grade yet".
+Assignments with no questions get no column.
+
+```
+GET /api/gradebook ->
+{ "columns": [ { "assignment_id": 1, "header": "HW 1", "max_points": 20 } ],
+  "rows":    [ { "student": "S001",
+                 "cells": [ { "score": 18, "reason": null } ] } ] }
+```
+
+Headers are assignment titles, with `(#id)` added when two titles match.
+Cells starting with `=`, `+`, `-`, or `@` get a leading `'` in the CSV so
+spreadsheets don't run them as formulas.
 
 ## Phone access
 

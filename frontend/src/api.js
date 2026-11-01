@@ -79,12 +79,28 @@ const real = {
   getSubmission(id) {
     return request('GET', `/api/submissions/${id}`)
   },
+  // { final_score, notes }; returns the full submission, now status "graded".
+  gradeSubmission(id, fields) {
+    return request('POST', `/api/submissions/${id}/grade`, fields)
+  },
   deleteSubmission(id) {
     return request('DELETE', `/api/submissions/${id}`)
   },
   imageUrl(id) {
     return `/api/submissions/${id}/image`
   },
+
+  // Gradebook. `assignmentIds` is an array, or null for every assignment.
+  getGradebook(assignmentIds) {
+    return request('GET', `/api/gradebook${gradebookQuery(assignmentIds)}`)
+  },
+  gradebookCsvUrl(assignmentIds) {
+    return `/api/gradebook.csv${gradebookQuery(assignmentIds)}`
+  },
+}
+
+function gradebookQuery(assignmentIds) {
+  return assignmentIds?.length ? `?assignment_ids=${assignmentIds.join(',')}` : ''
 }
 
 export const api = USE_MOCK ? mock : real

@@ -8,9 +8,21 @@ const PENDING = ['queued', 'processing']
 // while anything is still queued or processing; `refreshKey` forces a reload
 // (e.g. after an upload). List responses are kept out of the Raw JSON panel so
 // background refreshes don't replace the submission being debugged.
-export default function SubmissionList({ questionId, questionName, selectedId, onSelect, refreshKey, open, onToggle }) {
+// `onRows` gets each loaded list (null while loading), for "Confirm & Next".
+export default function SubmissionList({
+  questionId,
+  questionName,
+  selectedId,
+  onSelect,
+  refreshKey,
+  open,
+  onToggle,
+  onRows,
+}) {
   const [rows, setRows] = useState(null) // null while loading
   const [error, setError] = useState(null)
+
+  useEffect(() => onRows(rows), [rows])
 
   useEffect(() => {
     setRows(null)

@@ -8,6 +8,8 @@ import QuestionPanel from './components/QuestionPanel.jsx'
 import SubmissionList from './components/SubmissionList.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
 import TestResults from './components/TestResults.jsx'
+import Gradebook from './components/Gradebook.jsx'
+import GradePanel from './components/GradePanel.jsx'
 import { questionLabel } from './format.js'
 
 const POLL_MS = 1500
@@ -34,8 +36,10 @@ export default function App() {
   const [mockScenario, setMockScenario] = useState('ready_plain')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [listRefresh, setListRefresh] = useState(0)
+  const [submissionRows, setSubmissionRows] = useState(null) // the sidebar's list, for Confirm & Next
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [view, setView] = useState('grading') // 'grading' | 'gradebook'
 
   function clearSubmission() {
     setSubmission(null)
@@ -204,6 +208,33 @@ export default function App() {
     }
   }
 
+  // Next submission after the open one (wrapping around) that is done
+  // processing but not graded yet.
+  function nextUngradedId() {
+    if (!submissionRows || submission == null) return null
+    const i = submissionRows.findIndex((s) => s.id === submission.id)
+    const ordered = [...submissionRows.slice(i + 1), ...submissionRows.slice(0, Math.max(i, 0))]
+    return ordered.find((s) => s.id !== submission.id && s.status !== 'graded' && DONE.includes(s.status))?.id ?? null
+  }
+
+  async function gradeSubmission(fields, next) {
+    const id = submission.id
+    const url = `/api/submissions/${id}/grade`
+    const nextId = next ? nextUngradedId() : null
+    try {
+      const res = await api.gradeSubmission(id, fields)
+      setRaw({ label: `POST ${url} -> ${res.status}`, body: res.body })
+      setListRefresh((n) => n + 1)
+      if (nextId != null) selectSubmission(nextId)
+      else setSubmission(res.body)
+      return true
+    } catch (err) {
+      setRequestError(err.message)
+      setRaw({ label: `POST ${url} (failed)`, body: err.body ?? null })
+      return false
+    }
+  }
+
   // Poll until the submission reaches a terminal status, then stop.
   useEffect(() => {
     if (submissionId == null) return
@@ -231,148 +262,179 @@ export default function App() {
     }
   }, [submissionId, submissionVersion])
 
+  const rawPanel = raw && (
+    <details className="raw">
+      <summary>Raw JSON ({raw.label})</summary>
+      <pre>{JSON.stringify(raw.body, null, 2)}</pre>
+    </details>
+  )
+
   return (
     <div className="page">
       <header>
         <h1>Grading Assistant</h1>
         {USE_MOCK && <span className="mock-badge">MOCK MODE - no backend calls</span>}
+        <nav className="view-switch">
+          <button type="button" className={view === 'grading' ? 'active' : ''} onClick={() => setView('grading')}>
+            Grading
+          </button>
+          <button type="button" className={view === 'gradebook' ? 'active' : ''} onClick={() => setView('gradebook')}>
+            Gradebook
+          </button>
+        </nav>
       </header>
 
-      <AssignmentTabs
-        assignments={assignments}
-        selectedId={assignmentId}
-        creating={creatingAssignment}
-        error={assignmentsError}
-        onSelect={selectAssignment}
-        onNew={() => setCreatingAssignment(true)}
-      />
+      {view === 'gradebook' && (
+        <>
+          <Gradebook onResponse={(label, body) => setRaw({ label, body })} />
+          {rawPanel}
+        </>
+      )}
 
-      <div className={sidebarOpen ? 'layout' : 'layout sidebar-closed'}>
-        <div className="main">
-          <div className="setup">
-            <AssignmentPanel
-              detail={detail}
-              assignmentId={assignmentId}
-              creating={creatingAssignment}
-              onCancelCreate={assignments?.length > 0 ? () => setCreatingAssignment(false) : null}
-              onCreated={handleAssignmentCreated}
-              onDeleted={handleAssignmentDeleted}
-              questionId={questionId}
-              creatingQuestion={creatingQuestion}
-              onSelectQuestion={selectQuestion}
-              onAddQuestion={() => setCreatingQuestion(true)}
-              loadError={detailError}
-              onResponse={(label, body) => setRaw({ label, body })}
-            />
-            <QuestionPanel
-              detail={creatingAssignment ? null : detail}
-              questionId={questionId}
-              creating={creatingQuestion}
-              creatingAssignment={creatingAssignment}
-              onCancelCreate={() => setCreatingQuestion(false)}
-              onCreated={handleQuestionCreated}
-              onDeleted={handleQuestionDeleted}
-              onChanged={reloadDetail}
-              onEdited={handleQuestionEdited}
-              onResponse={(label, body) => setRaw({ label, body })}
-            />
-          </div>
-
-          <form className="upload" onSubmit={handleUpload}>
-            <input
-              type="file"
-              accept=".jpg,.jpeg,.png,.webp"
-              onChange={(e) => setFile(e.target.files[0] ?? null)}
-            />
-            {USE_MOCK && (
-              <label>
-                Mock scenario:{' '}
-                <select value={mockScenario} onChange={(e) => setMockScenario(e.target.value)}>
-                  {Object.entries(SCENARIOS).map(([key, label]) => (
-                    <option key={key} value={key}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <input
-              className="label-input"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder={file ? `Name (default: ${file.name.replace(/\.[^.]+$/, '')})` : 'Submission name (optional)'}
-              aria-label="Submission name"
-              title="Defaults to the file name. Use an anonymized label, not a student's real name."
-            />
-            <button type="submit" disabled={!file || uploading || uploadTarget == null}>
-              {uploading ? 'Uploading...' : 'Upload'}
-            </button>
-            <span className="hint">
-              {uploadTarget
-                ? `Uploads to ${detail.title} > ${questionLabel(uploadTarget)}`
-                : 'Select a question before uploading.'}
-            </span>
-          </form>
-
-          {requestError && <div className="banner error">Request failed: {requestError}</div>}
-
-          {!submission && !requestError && (
-            <p className="empty">
-              {submissionId != null
-                ? `Loading submission #${submissionId}...`
-                : 'Choose a photo of a handwritten program (jpg, png, or webp) and upload it, or pick a submission on the right.'}
-            </p>
-          )}
-
-          {submission && <SubmissionView submission={submission} onDelete={() => setConfirmingDelete(true)} />}
-
-          <ConfirmDialog
-            open={confirmingDelete && submission != null}
-            title="Delete submission?"
-            busy={deleting}
-            message={
-              submission && (
-                <>
-                  <p>
-                    This permanently deletes submission <strong>#{submission.id}</strong>
-                    {submission.student_label && <> ({submission.student_label})</>}, including its uploaded
-                    photo, transcription, test results, and scores.
-                  </p>
-                  {!DONE.includes(submission.status) && (
-                    <p>It is still {submission.status}. Deleting it now discards any work in progress.</p>
-                  )}
-                  <p>This cannot be undone.</p>
-                </>
-              )
-            }
-            confirmLabel="Delete submission"
-            onConfirm={deleteSubmission}
-            onCancel={() => setConfirmingDelete(false)}
+      {view === 'grading' && (
+        <>
+          <AssignmentTabs
+            assignments={assignments}
+            selectedId={assignmentId}
+            creating={creatingAssignment}
+            error={assignmentsError}
+            onSelect={selectAssignment}
+            onNew={() => setCreatingAssignment(true)}
           />
 
-          {raw && (
-            <details className="raw">
-              <summary>Raw JSON ({raw.label})</summary>
-              <pre>{JSON.stringify(raw.body, null, 2)}</pre>
-            </details>
-          )}
-        </div>
+          <div className={sidebarOpen ? 'layout' : 'layout sidebar-closed'}>
+            <div className="main">
+              <div className="setup">
+                <AssignmentPanel
+                  detail={detail}
+                  assignmentId={assignmentId}
+                  creating={creatingAssignment}
+                  onCancelCreate={assignments?.length > 0 ? () => setCreatingAssignment(false) : null}
+                  onCreated={handleAssignmentCreated}
+                  onDeleted={handleAssignmentDeleted}
+                  questionId={questionId}
+                  creatingQuestion={creatingQuestion}
+                  onSelectQuestion={selectQuestion}
+                  onAddQuestion={() => setCreatingQuestion(true)}
+                  loadError={detailError}
+                  onResponse={(label, body) => setRaw({ label, body })}
+                />
+                <QuestionPanel
+                  detail={creatingAssignment ? null : detail}
+                  questionId={questionId}
+                  creating={creatingQuestion}
+                  creatingAssignment={creatingAssignment}
+                  onCancelCreate={() => setCreatingQuestion(false)}
+                  onCreated={handleQuestionCreated}
+                  onDeleted={handleQuestionDeleted}
+                  onChanged={reloadDetail}
+                  onEdited={handleQuestionEdited}
+                  onResponse={(label, body) => setRaw({ label, body })}
+                />
+              </div>
 
-        <SubmissionList
-          questionId={questionId}
-          questionName={question ? questionLabel(question) : null}
-          selectedId={submissionId}
-          onSelect={selectSubmission}
-          refreshKey={listRefresh}
-          open={sidebarOpen}
-          onToggle={() => setSidebarOpen((o) => !o)}
-        />
-      </div>
+              <form className="upload" onSubmit={handleUpload}>
+                <input
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.webp"
+                  onChange={(e) => setFile(e.target.files[0] ?? null)}
+                />
+                {USE_MOCK && (
+                  <label>
+                    Mock scenario:{' '}
+                    <select value={mockScenario} onChange={(e) => setMockScenario(e.target.value)}>
+                      {Object.entries(SCENARIOS).map(([key, label]) => (
+                        <option key={key} value={key}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <input
+                  className="label-input"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder={
+                    file ? `Name (default: ${file.name.replace(/\.[^.]+$/, '')})` : 'Submission name (optional)'
+                  }
+                  aria-label="Submission name"
+                  title="Defaults to the file name. Use an anonymized label, not a student's real name."
+                />
+                <button type="submit" disabled={!file || uploading || uploadTarget == null}>
+                  {uploading ? 'Uploading...' : 'Upload'}
+                </button>
+                <span className="hint">
+                  {uploadTarget
+                    ? `Uploads to ${detail.title} > ${questionLabel(uploadTarget)}`
+                    : 'Select a question before uploading.'}
+                </span>
+              </form>
+
+              {requestError && <div className="banner error">Request failed: {requestError}</div>}
+
+              {!submission && !requestError && (
+                <p className="empty">
+                  {submissionId != null
+                    ? `Loading submission #${submissionId}...`
+                    : 'Choose a photo of a handwritten program (jpg, png, or webp) and upload it, or pick a submission on the right.'}
+                </p>
+              )}
+
+              {submission && (
+              <SubmissionView
+                submission={submission}
+                onDelete={() => setConfirmingDelete(true)}
+                hasNext={nextUngradedId() != null}
+                onGrade={gradeSubmission}
+              />
+            )}
+
+              <ConfirmDialog
+                open={confirmingDelete && submission != null}
+                title="Delete submission?"
+                busy={deleting}
+                message={
+                  submission && (
+                    <>
+                      <p>
+                        This permanently deletes submission <strong>#{submission.id}</strong>
+                        {submission.student_label && <> ({submission.student_label})</>}, including its uploaded photo,
+                        transcription, test results, and scores.
+                      </p>
+                      {!DONE.includes(submission.status) && (
+                        <p>It is still {submission.status}. Deleting it now discards any work in progress.</p>
+                      )}
+                      <p>This cannot be undone.</p>
+                    </>
+                  )
+                }
+                confirmLabel="Delete submission"
+                onConfirm={deleteSubmission}
+                onCancel={() => setConfirmingDelete(false)}
+              />
+
+              {rawPanel}
+            </div>
+
+            <SubmissionList
+              questionId={questionId}
+              questionName={question ? questionLabel(question) : null}
+              selectedId={submissionId}
+              onSelect={selectSubmission}
+              refreshKey={listRefresh}
+              open={sidebarOpen}
+              onToggle={() => setSidebarOpen((o) => !o)}
+              onRows={setSubmissionRows}
+            />
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
-function SubmissionView({ submission, onDelete }) {
+function SubmissionView({ submission, onDelete, hasNext, onGrade }) {
   const { id, student_label, status, transcription, flags, corrected_code, error_message, question } = submission
   const pending = !DONE.includes(status)
   const uncertainLines = (flags?.uncertain_lines ?? []).map((u) => u.line)
@@ -415,9 +477,7 @@ function SubmissionView({ submission, onDelete }) {
                 )}
               </>
             ) : (
-              <p className="placeholder">
-                {pending ? 'Waiting for transcription...' : 'No transcription returned.'}
-              </p>
+              <p className="placeholder">{pending ? 'Waiting for transcription...' : 'No transcription returned.'}</p>
             )}
           </div>
 
@@ -433,6 +493,7 @@ function SubmissionView({ submission, onDelete }) {
       </div>
 
       <TestResults submission={submission} />
+      <GradePanel key={id} submission={submission} pending={pending} hasNext={hasNext} onSave={onGrade} />
     </section>
   )
 }
