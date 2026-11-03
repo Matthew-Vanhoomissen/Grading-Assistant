@@ -38,6 +38,7 @@ Allowed (handwriting):
 - Ignore crossed-out text.
 
 Not allowed (programming):
+- DO NOT add parts of the code that appears erased, even if faint
 - Do not add a missing colon, parenthesis, bracket, or quote.
 - Do not fix a misspelled name when the letters are clearly different
   (count vs coutn), or a wrong function, operator, or number that is
