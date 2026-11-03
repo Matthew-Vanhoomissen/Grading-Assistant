@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, USE_MOCK } from './api.js'
 import { SCENARIOS, setScenario } from './mockApi.js'
 import CodeBlock from './components/CodeBlock.jsx'
+import CodeEditor from './components/CodeEditor.jsx'
 import AssignmentPanel from './components/AssignmentPanel.jsx'
 import AssignmentTabs from './components/AssignmentTabs.jsx'
 import QuestionPanel from './components/QuestionPanel.jsx'
@@ -235,6 +236,37 @@ export default function App() {
     }
   }
 
+  // Edits on the review page: both return the full submission. Returns an
+  // error message for the editor to show, or null.
+  async function runEditedCode(path, call) {
+    const url = `/api/submissions/${submission.id}/${path}`
+    try {
+      const res = await call()
+      setRaw({ label: `POST ${url} -> ${res.status}`, body: res.body })
+      setSubmission(res.body)
+      setListRefresh((n) => n + 1) // a rerun changes the suggested score
+      return null
+    } catch (err) {
+      setRaw({ label: `POST ${url} (failed)`, body: err.body ?? null })
+      return err.message
+    }
+  }
+
+  const rerunCode = (code) => runEditedCode('rerun', () => api.rerunSubmission(submission.id, { code }))
+  const setCorrectedCode = (code) => runEditedCode('corrected', () => api.setCorrected(submission.id, { code }))
+
+  async function discardCorrectedCode() {
+    const url = `/api/submissions/${submission.id}/corrected`
+    try {
+      const res = await api.discardCorrected(submission.id)
+      setRaw({ label: `DELETE ${url} -> ${res.status}`, body: res.body })
+      setSubmissionVersion((v) => v + 1) // 204 has no body; re-fetch
+    } catch (err) {
+      setRequestError(err.message)
+      setRaw({ label: `DELETE ${url} (failed)`, body: err.body ?? null })
+    }
+  }
+
   // Poll until the submission reaches a terminal status, then stop.
   useEffect(() => {
     if (submissionId == null) return
@@ -383,10 +415,14 @@ export default function App() {
 
               {submission && (
               <SubmissionView
+                key={submission.id}
                 submission={submission}
                 onDelete={() => setConfirmingDelete(true)}
                 hasNext={nextUngradedId() != null}
                 onGrade={gradeSubmission}
+                onRerun={rerunCode}
+                onSetCorrected={setCorrectedCode}
+                onDiscardCorrected={discardCorrectedCode}
               />
             )}
 
@@ -434,9 +470,14 @@ export default function App() {
   )
 }
 
-function SubmissionView({ submission, onDelete, hasNext, onGrade }) {
+function SubmissionView({ submission, onDelete, hasNext, onGrade, onRerun, onSetCorrected, onDiscardCorrected }) {
   const { id, student_label, status, transcription, flags, corrected_code, error_message, question } = submission
   const pending = !DONE.includes(status)
+  const [editing, setEditing] = useState(null) // null | 'transcription' | 'corrected'
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false)
+  const [discarding, setDiscarding] = useState(false)
+  // After the first misread fix, flags keep what the model read; uncertain_lines refer to that.
+  const edited = flags != null && 'model_transcription' in flags
   const uncertainLines = (flags?.uncertain_lines ?? []).map((u) => u.line)
   const syntaxErrors = (flags?.static_flags ?? []).filter((f) => f.reason.startsWith('syntax error'))
 
@@ -463,33 +504,126 @@ function SubmissionView({ submission, onDelete, hasNext, onGrade }) {
 
         <div className="code-panels">
           <div className="panel">
-            <h2>Transcription</h2>
+            <div className="panel-header">
+              <h2>Transcription</h2>
+              {!pending && editing !== 'transcription' && (
+                <button type="button" onClick={() => setEditing('transcription')}>
+                  {transcription == null ? 'Type code' : 'Edit'}
+                </button>
+              )}
+            </div>
             {syntaxErrors.map((f, i) => (
               <div key={i} className="banner warn">
                 Line {f.line}: {f.reason}
               </div>
             ))}
-            {transcription != null ? (
+            {editing === 'transcription' ? (
+              <CodeEditor
+                initial={transcription ?? ''}
+                note={
+                  <>
+                    <strong>Fix a misread</strong> to match the photo. This replaces the transcription and re-scores
+                    it, since a model mistake shouldn't cost points.{' '}
+                    {status === 'graded' && 'The final score you gave is kept; update it below if needed. '}
+                    To see what fixing the student's own mistake would do, use the corrected version instead.
+                  </>
+                }
+                runLabel="Re-run tests"
+                onRun={async (code) => (await onRerun(code)) ?? setEditing(null)}
+                onCancel={() => setEditing(null)}
+              />
+            ) : transcription != null ? (
               <>
-                <CodeBlock code={transcription} highlight={uncertainLines} />
-                {uncertainLines.length > 0 && (
+                <CodeBlock code={transcription} highlight={edited ? [] : uncertainLines} />
+                {!edited && uncertainLines.length > 0 && (
                   <p className="hint">Highlighted lines were marked uncertain by the model.</p>
+                )}
+                {edited && (
+                  <details className="model-reading">
+                    <summary>Edited by the professor. Show what the model read</summary>
+                    {flags.model_transcription != null ? (
+                      <CodeBlock code={flags.model_transcription} highlight={uncertainLines} />
+                    ) : (
+                      <p className="placeholder">The model returned no transcription.</p>
+                    )}
+                    {uncertainLines.length > 0 && (
+                      <p className="hint">Highlighted lines were marked uncertain by the model.</p>
+                    )}
+                  </details>
                 )}
               </>
             ) : (
-              <p className="placeholder">{pending ? 'Waiting for transcription...' : 'No transcription returned.'}</p>
+              <p className="placeholder">
+                {pending ? 'Waiting for transcription...' : 'No transcription returned. Type the code from the photo to test it.'}
+              </p>
             )}
           </div>
 
           <div className="panel">
-            <h2>Corrected code</h2>
-            {corrected_code != null ? (
-              <CodeBlock code={corrected_code} />
+            <div className="panel-header">
+              <h2>Corrected code</h2>
+              {!pending && transcription != null && editing !== 'corrected' && (
+                <div className="row">
+                  <button type="button" onClick={() => setEditing('corrected')}>
+                    {corrected_code == null ? 'Create' : 'Edit'}
+                  </button>
+                  {corrected_code != null && (
+                    <button type="button" className="danger" onClick={() => setConfirmingDiscard(true)}>
+                      Discard
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            {editing === 'corrected' ? (
+              <CodeEditor
+                initial={corrected_code ?? transcription}
+                note={
+                  <>
+                    Fix the <strong>student's</strong> mistake to see how the code does without it. For comparison only:
+                    the transcription and suggested score don't change.
+                  </>
+                }
+                runLabel="Run corrected"
+                onRun={async (code) => (await onSetCorrected(code)) ?? setEditing(null)}
+                onCancel={() => setEditing(null)}
+              />
+            ) : corrected_code != null ? (
+              <>
+                <p className="hint">
+                  {flags?.syntax_fix ? 'Model syntax fix (comparison only):' : 'Edited by the professor (comparison only).'}
+                </p>
+                {flags?.syntax_fix?.changes?.length > 0 && (
+                  <ul className="fix-changes">
+                    {flags.syntax_fix.changes.map((c, i) => (
+                      <li key={i}>
+                        Line {c.line}: {c.description}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <CodeBlock code={corrected_code} />
+              </>
             ) : (
               <p className="placeholder">{pending ? 'Waiting...' : 'No corrected version generated.'}</p>
             )}
           </div>
         </div>
+
+        <ConfirmDialog
+          open={confirmingDiscard}
+          title="Discard corrected version?"
+          busy={discarding}
+          message={<p>This removes the corrected code and its test results. The transcription and scores are not affected.</p>}
+          confirmLabel="Discard"
+          onConfirm={async () => {
+            setDiscarding(true)
+            await onDiscardCorrected()
+            setDiscarding(false)
+            setConfirmingDiscard(false)
+          }}
+          onCancel={() => setConfirmingDiscard(false)}
+        />
       </div>
 
       <TestResults submission={submission} />

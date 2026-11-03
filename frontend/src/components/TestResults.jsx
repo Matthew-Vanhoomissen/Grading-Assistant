@@ -6,7 +6,7 @@
 // max_points / total. The total row uses the backend's suggested_score so the
 // table always agrees with it, even where rounding the per-test shares wouldn't.
 
-const VERSION_TITLES = { original: 'Transcribed code', corrected: 'Corrected code' }
+const VERSION_TITLES = { original: 'Transcribed code (sets the suggested score)', corrected: 'Corrected code (comparison only)' }
 
 const fmt = (n) => String(Math.round(n * 100) / 100)
 
@@ -19,7 +19,7 @@ export default function TestResults({ submission }) {
   else if (status === 'error') body = <p className="placeholder">No test results: processing failed.</p>
   else if (results.length === 0) body = <p className="placeholder">No test results: the question had no test cases when this submission was processed.</p>
   else {
-    // One table per code version, original first ("corrected" appears once the syntax-fix step exists).
+    // One table per code version, original first. The corrected total is computed here; only the original's is the backend's suggested_score.
     const versions = ['original', 'corrected'].filter((v) => results.some((r) => r.version === v))
     body = versions.map((v) => (
       <ResultsTable

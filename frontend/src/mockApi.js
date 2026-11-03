@@ -33,8 +33,6 @@ const FINAL = {
       static_flags: [],
     },
     error_message: null,
-    // Ignores stdin and always prints 5, so it passes some tests and fails others.
-    run: () => ({ actual_output: '5\n', error: null }),
   },
   ready_corrected: {
     status: 'ready',
@@ -48,13 +46,10 @@ const FINAL = {
         { line: 4, chosen: '        total += n', alternative: '        total + n', reason: 'unclear = sign' },
       ],
       static_flags: [{ line: 1, reason: "syntax error: expected ':'" }],
+      // As if SYNTAX_FIX=1: the model's fix is the corrected version.
+      syntax_fix: { changes: [{ line: 1, description: 'added missing colon' }] },
     },
     error_message: null,
-    // The original transcription doesn't parse, so every test fails the way the sandbox reports it.
-    run: () => ({
-      actual_output: '',
-      error: '  File "/code/main.py", line 1\n    def average(nums)\n                     ^\nSyntaxError: expected \':\'',
-    }),
   },
   error: {
     status: 'error',
@@ -62,7 +57,6 @@ const FINAL = {
     corrected_code: null,
     flags: null,
     error_message: 'RateLimitError: model API returned 429 (rate limited)',
-    run: null,
   },
 }
 
@@ -71,7 +65,34 @@ const PENDING = {
   corrected_code: null,
   flags: null,
   error_message: null,
-  run: null,
+}
+
+// The mock can't run Python. It fakes the sandbox: a block header (def, if,
+// for, ...) without a trailing colon is a SyntaxError, the known corrected
+// "average" program prints 2.0, and anything else prints 5 whatever the
+// input, so it passes some tests and fails others.
+const BLOCK_HEADER = /^\s*(def|class|if|elif|else|for|while|try|except|finally|with)\b/
+
+function mockSyntaxError(code) {
+  const lines = code.split('\n')
+  const i = lines.findIndex((l) => BLOCK_HEADER.test(l) && !l.replace(/#.*$/, '').trimEnd().endsWith(':'))
+  return i === -1 ? null : { line: i + 1, text: lines[i] }
+}
+
+function mockStaticFlags(code) {
+  const err = mockSyntaxError(code)
+  return err ? [{ line: err.line, reason: "syntax error: expected ':'" }] : []
+}
+
+function mockRun(code) {
+  const err = mockSyntaxError(code)
+  if (err) {
+    return {
+      actual_output: '',
+      error: `  File "/code/main.py", line ${err.line}\n    ${err.text.trim()}\n    ^\nSyntaxError: expected ':'`,
+    }
+  }
+  return { actual_output: code === FINAL.ready_corrected.corrected_code ? '2.0\n' : '5\n', error: null }
 }
 
 // Same comparison as backend/sandbox.py outputs_match: unless exact, ignore
@@ -306,32 +327,36 @@ export async function createSubmission(questionId, file, label) {
   return { status: 201, body: { submission_ids: [id] } }
 }
 
-// Fake a test run against the question's current test cases, scored like
-// backend/scoring.py. Results are computed on read, so they follow later test edits.
-function runMockTests(submissionId, question, run) {
+// Fake test runs against the question's current test cases, scored like
+// backend/scoring.py. Results are computed on read, so they follow later test
+// edits. Only the original sets the score; corrected is for comparison.
+function runMockTests(submissionId, question, code, correctedCode) {
   const none = { test_results: [], verdict: null, suggested_score: null, score_reasoning: null }
-  if (!run || !question) return none
-  const test_results = testsOf(question.id).map((t, i) => {
-    const { actual_output, error } = run(t)
-    const passed = error == null && outputsMatch(actual_output, t.expected_output, Boolean(question.exact_match))
-    return {
-      id: submissionId * 100 + i,
-      submission_id: submissionId,
-      test_case_id: t.id,
-      version: 'original',
-      passed: passed ? 1 : 0,
-      actual_output,
-      error,
-      input: t.input,
-      expected_output: t.expected_output,
-    }
-  })
-  const total = test_results.length
-  const passed = test_results.filter((r) => r.passed).length
+  if (code == null || !question) return none
+  const runVersion = (version, source, offset) =>
+    testsOf(question.id).map((t, i) => {
+      const { actual_output, error } = mockRun(source)
+      const passed = error == null && outputsMatch(actual_output, t.expected_output, Boolean(question.exact_match))
+      return {
+        id: submissionId * 100 + offset + i,
+        submission_id: submissionId,
+        test_case_id: t.id,
+        version,
+        passed: passed ? 1 : 0,
+        actual_output,
+        error,
+        input: t.input,
+        expected_output: t.expected_output,
+      }
+    })
+  const original = runVersion('original', code, 0)
+  const corrected = correctedCode != null ? runVersion('corrected', correctedCode, 50) : []
+  const total = original.length
+  const passed = original.filter((r) => r.passed).length
   if (total === 0) return none
   const score = Math.round((question.max_points * passed / total) * 100) / 100
   return {
-    test_results,
+    test_results: [...original, ...corrected],
     verdict: passed === total ? 'pass' : null,
     suggested_score: score,
     score_reasoning: `Passed ${passed} of ${total} tests: ${question.max_points} x ${passed}/${total} = ${score}.`,
@@ -348,18 +373,36 @@ function buildSubmission(id, sub) {
   // Once processing is done, a final score makes it graded (the backend sets status on grade).
   const graded = sub.finalScore != null && !['queued', 'processing'].includes(state.status)
 
+  const done = !['queued', 'processing'].includes(state.status)
+  let { status, transcription, corrected_code, error_message } = state
+  let flags = state.flags && { ...state.flags }
+  // Professor fixed a misread (rerun): like pipeline.rerun_submission.
+  if (done && sub.edited != null) {
+    flags = { uncertain_lines: [], ...flags, model_transcription: transcription, static_flags: mockStaticFlags(sub.edited) }
+    transcription = sub.edited
+    if (status === 'error') {
+      status = 'ready'
+      error_message = null
+    }
+  }
+  // Professor set or discarded the corrected version; syntax_fix described the model's.
+  if (done && sub.corrected !== undefined) {
+    corrected_code = sub.corrected
+    if (flags) delete flags.syntax_fix
+  }
+
   const question = questions.get(sub.questionId) ?? null
   const assignment = question ? assignmentRow(assignments.get(question.assignment_id)) : null
-  const results = runMockTests(id, question, state.run)
+  const results = runMockTests(id, question, transcription, corrected_code)
   return {
     id,
     question_id: sub.questionId,
     student_label: sub.label,
-    status: graded ? 'graded' : state.status,
-    transcription: state.transcription,
-    corrected_code: state.corrected_code,
-    flags: state.flags,
-    error_message: state.error_message,
+    status: graded ? 'graded' : status,
+    transcription,
+    corrected_code,
+    flags,
+    error_message,
     verdict: results.verdict,
     suggested_score: results.suggested_score,
     final_score: graded ? sub.finalScore : null,
@@ -398,12 +441,56 @@ export async function getSubmission(id) {
   return { status: 200, body: buildSubmission(Number(id), sub) }
 }
 
+// Like the backend's _busy: edits and grades are refused while the worker
+// owns the submission.
+function rejectIfBusy(method, url, id, sub) {
+  const { status } = buildSubmission(Number(id), sub)
+  if (status === 'queued' || status === 'processing') throw fail(method, url, 409, 'submission is still queued/processing')
+}
+
+function codeFrom(fields, url) {
+  if (typeof fields?.code !== 'string') throw fail('POST', url, 400, 'code is required')
+  return fields.code
+}
+
+// Fix a misread: the edit replaces the transcription and re-scores the original.
+export async function rerunSubmission(id, fields) {
+  await delay(400)
+  const url = `/api/submissions/${id}/rerun`
+  const sub = or404(submissions, 'POST', url, id)
+  rejectIfBusy('POST', url, id, sub)
+  sub.edited = codeFrom(fields, url)
+  return { status: 200, body: buildSubmission(Number(id), sub) }
+}
+
+// Corrected version, for comparison only: scores and transcription don't change.
+export async function setCorrected(id, fields) {
+  await delay(400)
+  const url = `/api/submissions/${id}/corrected`
+  const sub = or404(submissions, 'POST', url, id)
+  rejectIfBusy('POST', url, id, sub)
+  sub.corrected = codeFrom(fields, url)
+  return { status: 200, body: buildSubmission(Number(id), sub) }
+}
+
+export async function discardCorrected(id) {
+  await delay(150)
+  const url = `/api/submissions/${id}/corrected`
+  const sub = submissions.get(Number(id))
+  if (sub) {
+    rejectIfBusy('DELETE', url, id, sub)
+    sub.corrected = null
+  }
+  return { status: 204, body: null }
+}
+
 // Like the backend: final_score must be a number; notes is overwritten
 // (missing -> null); status becomes "graded". Returns the full submission.
 export async function gradeSubmission(id, fields) {
   await delay(150)
   const url = `/api/submissions/${id}/grade`
   const sub = or404(submissions, 'POST', url, id)
+  rejectIfBusy('POST', url, id, sub)
   const score = Number(fields.final_score)
   if (fields.final_score == null || fields.final_score === '' || Number.isNaN(score)) {
     throw fail('POST', url, 400, 'final_score must be a number')

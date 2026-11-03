@@ -19,6 +19,10 @@ export default function GradePanel({ submission, pending, hasNext, onSave }) {
   const score = scoreInput ?? (prefill == null ? '' : String(prefill))
   const notes = notesInput ?? submission.notes ?? ''
   const overMax = score !== '' && maxPoints != null && Number(score) > maxPoints
+  // What the corrected version would score with the same formula, to help decide partial credit.
+  const corrected = (submission.test_results ?? []).filter((r) => r.version === 'corrected')
+  const correctedPassed = corrected.filter((r) => r.passed).length
+  const correctedScore = corrected.length && maxPoints != null ? (maxPoints * correctedPassed) / corrected.length : null
 
   async function save(next) {
     setSaving(true)
@@ -62,6 +66,13 @@ export default function GradePanel({ submission, pending, hasNext, onSave }) {
           ? `Suggested: ${fmtPoints(suggested_score)}${maxPoints != null ? ` / ${fmtPoints(maxPoints)}` : ''}. ${score_reasoning ?? ''}`
           : 'No suggested score (no test results for this submission). Enter a score from the photo and code.'}
       </p>
+      {corrected.length > 0 && (
+        <p className="hint">
+          Corrected version: passes {correctedPassed} of {corrected.length} tests
+          {correctedScore != null && ` (would be ${fmtPoints(correctedScore)} / ${fmtPoints(maxPoints)})`}. For
+          comparison only; it doesn't change the suggested score.
+        </p>
+      )}
       <div className="grade-fields">
         <label>
           Score{maxPoints != null && ` (out of ${fmtPoints(maxPoints)})`}

@@ -7,9 +7,10 @@ Usage: python -m backend.pipeline <image> <question_id> [student_label]
 """
 
 import sys
+import traceback
 from pathlib import Path
 
-from backend import db
+from backend import agent, db
 from backend.sandbox import outputs_match, run_code
 from backend.scoring import suggest_score
 from backend.transcribe import static_flags, transcribe
@@ -76,9 +77,19 @@ def rescore_question(question_id):
                              verdict=verdict)
 
 
+def _run_corrected(submission_id, question, code):
+    """Run the corrected version's tests. Never touches the original."""
+    tests = db.list_test_cases(question["id"])
+    db.replace_test_results(submission_id, "corrected", run_tests(
+        code, tests, bool(question["exact_match"])))
+
+
 def process_submission(submission_id):
     sub = db.get_submission(submission_id)
     question = db.get_question(sub["question_id"])
+    # A requeue starts fresh: an old corrected version described the old
+    # transcription.
+    db.replace_test_results(submission_id, "corrected", [])
 
     result = transcribe(sub["image_path"])
     code = result["code"]
@@ -86,25 +97,76 @@ def process_submission(submission_id):
              "static_flags": result["static_flags"]}
 
     score, verdict = _grade(submission_id, question, code)
+
+    # TODO(step 7): run the fix only after the photo re-check confirms the
+    # syntax error is the student's. A faint colon is often a misread.
+    corrected = None
+    if (agent.syntax_fix_enabled()
+            and agent.has_syntax_error(flags["static_flags"])):
+        try:
+            fix = agent.syntax_fix(code)
+        except Exception:
+            # Optional step: the transcription and original results stand.
+            traceback.print_exc()
+            fix = None
+        if fix:
+            corrected = fix["code"]
+            flags["syntax_fix"] = {"changes": fix["changes"]}
+            _run_corrected(submission_id, question, corrected)
+
     db.update_submission(submission_id, transcription=code, flags=flags,
-                         suggested_score=score, verdict=verdict,
-                         status="ready", error_message=None)
+                         corrected_code=corrected, suggested_score=score,
+                         verdict=verdict, status="ready", error_message=None)
 
 
 def rerun_submission(submission_id, code):
-    """Re-run tests after the professor edits the code on the review page.
+    """Re-run tests after the professor fixes a misread on the review page.
 
-    The edited code replaces the transcription. The model's uncertain_lines
-    are kept for reference; static flags are recomputed for the new code.
+    The edited code replaces the transcription and re-scores the original.
+    The model's first reading is kept in flags.model_transcription, and its
+    uncertain_lines (which refer to that reading) are kept as they are.
+    Static flags are recomputed. The corrected version is left alone.
     """
     sub = db.get_submission(submission_id)
     question = db.get_question(sub["question_id"])
     flags = dict(sub["flags"] or {})
+    if "model_transcription" not in flags:
+        flags["model_transcription"] = sub["transcription"]
     flags["static_flags"] = static_flags(code)
 
     score, verdict = _grade(submission_id, question, code)
-    db.update_submission(submission_id, transcription=code, flags=flags,
-                         suggested_score=score, verdict=verdict)
+    fields = {"transcription": code, "flags": flags,
+              "suggested_score": score, "verdict": verdict}
+    if sub["status"] == "error":
+        # The professor typed in code the model couldn't read.
+        fields.update(status="ready", error_message=None)
+    db.update_submission(submission_id, **fields)
+
+
+def set_corrected(submission_id, code):
+    """Store a professor-edited corrected version and run its tests.
+
+    For comparison only: the transcription, scores, verdict, and status
+    don't change. syntax_fix is dropped because it described the model's
+    version, not this one.
+    """
+    sub = db.get_submission(submission_id)
+    question = db.get_question(sub["question_id"])
+    _run_corrected(submission_id, question, code)
+    flags = dict(sub["flags"] or {})
+    flags.pop("syntax_fix", None)
+    db.update_submission(submission_id, corrected_code=code, flags=flags)
+
+
+def clear_corrected(submission_id):
+    sub = db.get_submission(submission_id)
+    if not sub:
+        return
+    db.replace_test_results(submission_id, "corrected", [])
+    flags = sub["flags"]
+    if flags:
+        flags.pop("syntax_fix", None)
+    db.update_submission(submission_id, corrected_code=None, flags=flags)
 
 
 def main():

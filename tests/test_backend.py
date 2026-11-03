@@ -6,13 +6,15 @@ from pathlib import Path
 import pytest
 
 from backend import app as app_module
-from backend import db, pipeline, worker
+from backend import agent, db, pipeline, worker
 
 FAKE_CODE = {
     "good.jpg": "s = input()\nprint(s[::-1])",
     "misread.jpg": "S = input()\nprint(s[::-1])",
     "add.jpg": "a = int(input())\nb = int(input())\nprint(a + b)",
+    "syntax.jpg": "s = input(\nprint(s[::-1])",
 }
+FIXED_SYNTAX = "s = input()\nprint(s[::-1])"
 
 REVERSE_TESTS = [("abc\n", "cba"), ("racecar\n", "racecar")]
 
@@ -31,6 +33,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(app_module, "UPLOAD_DIR", tmp_path / "uploads")
     monkeypatch.setattr(pipeline, "transcribe", fake_transcribe)
+    monkeypatch.delenv("SYNTAX_FIX", raising=False)
     db.init_db()
     return app_module.app.test_client()
 
@@ -302,3 +305,236 @@ def test_delete_keeps_photos_outside_uploads(client, tmp_path):
     sub_id = db.create_submission(q["id"], "cli", str(sample))
     client.delete(f"/api/submissions/{sub_id}")
     assert sample.exists()
+
+
+# Editable code and corrected versions
+
+def one_processed(client, name="misread.jpg"):
+    q = make_question(client, make_assignment(client)["id"],
+                      tests=REVERSE_TESTS)
+    sub_id = upload(client, q["id"], [name]).get_json()["submission_ids"][0]
+    process_queue()
+    return q, sub_id
+
+
+def versions(sub, version):
+    return [t for t in sub["test_results"] if t["version"] == version]
+
+
+def test_rerun_keeps_model_transcription(client):
+    _, sub_id = one_processed(client)
+    uncertain = [{"line": 1, "chosen": "S = input()",
+                  "alternative": "s = input()", "reason": "S or s"}]
+    flags = db.get_submission(sub_id)["flags"]
+    db.update_submission(sub_id, flags={**flags,
+                                        "uncertain_lines": uncertain})
+
+    sub = client.post(f"/api/submissions/{sub_id}/rerun",
+                      json={"code": "s = input()\nprint(s)"}).get_json()
+    assert sub["flags"]["model_transcription"] == FAKE_CODE["misread.jpg"]
+    sub = client.post(f"/api/submissions/{sub_id}/rerun",
+                      json={"code": FIXED_SYNTAX}).get_json()
+    assert sub["transcription"] == FIXED_SYNTAX
+    assert sub["flags"]["model_transcription"] == FAKE_CODE["misread.jpg"]
+    assert sub["flags"]["uncertain_lines"] == uncertain
+    assert sub["suggested_score"] == 10
+
+
+def test_rerun_leaves_corrected_alone(client):
+    _, sub_id = one_processed(client)
+    client.post(f"/api/submissions/{sub_id}/corrected",
+                json={"code": FIXED_SYNTAX})
+    sub = client.post(f"/api/submissions/{sub_id}/rerun",
+                      json={"code": "print('x')"}).get_json()
+    assert sub["corrected_code"] == FIXED_SYNTAX
+    assert all(t["passed"] for t in versions(sub, "corrected"))
+
+
+def test_rerun_on_error_makes_it_ready(client):
+    _, sub_id = one_processed(client, "bad.jpg")
+    sub = client.post(f"/api/submissions/{sub_id}/rerun",
+                      json={"code": FIXED_SYNTAX}).get_json()
+    assert sub["status"] == "ready"
+    assert sub["error_message"] is None
+    assert sub["suggested_score"] == 10
+    assert sub["flags"]["model_transcription"] is None
+
+
+def test_corrected_version_is_separate(client):
+    _, sub_id = one_processed(client)
+    client.post(f"/api/submissions/{sub_id}/grade", json={"final_score": 3})
+    before = client.get(f"/api/submissions/{sub_id}").get_json()
+
+    r = client.post(f"/api/submissions/{sub_id}/corrected",
+                    json={"code": FIXED_SYNTAX})
+    assert r.status_code == 200
+    sub = r.get_json()
+    assert sub["corrected_code"] == FIXED_SYNTAX
+    assert len(versions(sub, "corrected")) == 2
+    assert all(t["passed"] for t in versions(sub, "corrected"))
+    for field in ("transcription", "suggested_score", "verdict",
+                  "final_score", "status"):
+        assert sub[field] == before[field], field
+    assert versions(sub, "original") == versions(before, "original")
+    assert sub["score_reasoning"] == before["score_reasoning"]
+
+    r = client.post(f"/api/submissions/{sub_id}/corrected", json={})
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "code is required"
+
+
+def test_discard_corrected(client):
+    _, sub_id = one_processed(client)
+    client.post(f"/api/submissions/{sub_id}/corrected",
+                json={"code": FIXED_SYNTAX})
+    r = client.delete(f"/api/submissions/{sub_id}/corrected")
+    assert r.status_code == 204
+    sub = client.get(f"/api/submissions/{sub_id}").get_json()
+    assert sub["corrected_code"] is None
+    assert versions(sub, "corrected") == []
+    assert len(versions(sub, "original")) == 2
+    # Nothing left to delete, or no such submission: still 204.
+    assert client.delete(
+        f"/api/submissions/{sub_id}/corrected").status_code == 204
+    assert client.delete("/api/submissions/999/corrected").status_code == 204
+
+
+def test_edits_blocked_while_worker_owns_it(client):
+    q = make_question(client, make_assignment(client)["id"],
+                      tests=REVERSE_TESTS)
+    sub_id = upload(client, q["id"], ["good.jpg"]
+                    ).get_json()["submission_ids"][0]
+    for status in ("queued", "processing"):
+        db.update_submission(sub_id, status=status)
+        for method, route, body in [
+                ("post", "rerun", {"code": "x"}),
+                ("post", "corrected", {"code": "x"}),
+                ("delete", "corrected", None),
+                ("post", "grade", {"final_score": 1})]:
+            r = getattr(client, method)(f"/api/submissions/{sub_id}/{route}",
+                                        json=body)
+            assert r.status_code == 409, (status, route)
+            assert r.get_json()["error"] == (
+                "submission is still queued/processing")
+    assert db.get_submission(sub_id)["final_score"] is None
+
+
+def test_rescore_covers_both_versions(client):
+    q = make_question(client, make_assignment(client)["id"], 10,
+                      tests=[("1\n", "1  ")])
+    sub_id = db.create_submission(q["id"], "s1", "unused")
+    pipeline.rerun_submission(sub_id, "print(input())")
+    pipeline.set_corrected(sub_id, "print(input() + '  ', end='')")
+    sub = client.get(f"/api/submissions/{sub_id}").get_json()
+    assert versions(sub, "original")[0]["passed"]
+    assert versions(sub, "corrected")[0]["passed"]
+
+    # Exact match: original fails, corrected (with the spaces) passes, and
+    # the score comes from the original only.
+    client.patch(f"/api/questions/{q['id']}", json={"exact_match": True})
+    sub = client.get(f"/api/submissions/{sub_id}").get_json()
+    assert not versions(sub, "original")[0]["passed"]
+    assert versions(sub, "corrected")[0]["passed"]
+    assert sub["suggested_score"] == 0
+    assert sub["corrected_code"] == "print(input() + '  ', end='')"
+
+
+# Model syntax fix (model call mocked)
+
+def mock_fix(monkeypatch, code, changes=None):
+    calls = []
+
+    def fake_ask_json(prompt, schema):
+        calls.append(prompt)
+        return {"code": code, "changes": changes or [
+            {"line": 1, "description": "added missing parenthesis"}]}
+    monkeypatch.setattr(agent.llm, "ask_json", fake_ask_json)
+    return calls
+
+
+def test_syntax_fix_runs_on_syntax_error(client, monkeypatch):
+    monkeypatch.setenv("SYNTAX_FIX", "1")
+    calls = mock_fix(monkeypatch, FIXED_SYNTAX)
+    _, sub_id = one_processed(client, "syntax.jpg")
+    sub = client.get(f"/api/submissions/{sub_id}").get_json()
+
+    assert len(calls) == 1
+    assert sub["status"] == "ready"
+    assert sub["transcription"] == FAKE_CODE["syntax.jpg"]
+    assert sub["corrected_code"] == FIXED_SYNTAX
+    assert sub["flags"]["syntax_fix"]["changes"][0]["line"] == 1
+    assert all(t["passed"] for t in versions(sub, "corrected"))
+    assert not any(t["passed"] for t in versions(sub, "original"))
+    assert sub["suggested_score"] == 0
+
+    # Editing the corrected version drops the model's change list.
+    sub = client.post(f"/api/submissions/{sub_id}/corrected",
+                      json={"code": "print(input())"}).get_json()
+    assert "syntax_fix" not in sub["flags"]
+
+
+def test_syntax_fix_only_for_syntax_errors(client, monkeypatch):
+    monkeypatch.setenv("SYNTAX_FIX", "1")
+    calls = mock_fix(monkeypatch, FIXED_SYNTAX)
+    _, sub_id = one_processed(client, "misread.jpg")  # parses, fails tests
+    assert calls == []
+    assert db.get_submission(sub_id)["corrected_code"] is None
+
+
+def test_syntax_fix_off_by_default(client, monkeypatch):
+    calls = mock_fix(monkeypatch, FIXED_SYNTAX)
+    _, sub_id = one_processed(client, "syntax.jpg")
+    assert calls == []
+    assert db.get_submission(sub_id)["corrected_code"] is None
+
+
+@pytest.mark.parametrize("fixed, max_lines", [
+    ("s = input(\nprint(s)", 1000),   # still doesn't parse
+    (FIXED_SYNTAX, 0),                # changes more lines than allowed
+    (FAKE_CODE["syntax.jpg"], 1000),  # no change at all
+])
+def test_bad_syntax_fix_is_thrown_away(client, monkeypatch, fixed,
+                                       max_lines):
+    monkeypatch.setenv("SYNTAX_FIX", "1")
+    monkeypatch.setattr(agent, "MAX_FIX_CHANGED_LINES", max_lines)
+    calls = mock_fix(monkeypatch, fixed)
+    _, sub_id = one_processed(client, "syntax.jpg")
+    sub = client.get(f"/api/submissions/{sub_id}").get_json()
+    assert len(calls) == 1
+    assert sub["status"] == "ready"
+    assert sub["corrected_code"] is None
+    assert "syntax_fix" not in sub["flags"]
+    assert versions(sub, "corrected") == []
+
+
+def test_syntax_fix_api_failure_keeps_submission_ready(client, monkeypatch):
+    monkeypatch.setenv("SYNTAX_FIX", "1")
+
+    def broken(prompt, schema):
+        raise RuntimeError("API down")
+    monkeypatch.setattr(agent.llm, "ask_json", broken)
+    _, sub_id = one_processed(client, "syntax.jpg")
+    sub = db.get_submission(sub_id)
+    assert sub["status"] == "ready"
+    assert sub["corrected_code"] is None
+
+
+def test_requeue_clears_corrected(client):
+    _, sub_id = one_processed(client)
+    client.post(f"/api/submissions/{sub_id}/corrected",
+                json={"code": FIXED_SYNTAX})
+    client.post(f"/api/submissions/{sub_id}/rerun", json={"code": "x = 1"})
+    client.post(f"/api/submissions/{sub_id}/requeue")
+    process_queue()
+    sub = client.get(f"/api/submissions/{sub_id}").get_json()
+    assert sub["corrected_code"] is None
+    assert versions(sub, "corrected") == []
+    assert sub["transcription"] == FAKE_CODE["misread.jpg"]
+    assert "model_transcription" not in sub["flags"]
+
+
+def test_changed_line_count():
+    assert agent.changed_line_count("a\nb\nc", "a\nb\nc") == 0
+    assert agent.changed_line_count("a\nb\nc", "a\nB\nc") == 1
+    assert agent.changed_line_count("a\nb", "a\nx\ny\nb") == 2
+    assert agent.changed_line_count("a\nb\nc", "a") == 2

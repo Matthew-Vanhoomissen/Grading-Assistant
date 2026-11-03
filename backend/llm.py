@@ -49,6 +49,21 @@ def ask_text(prompt, model=DEFAULT_MODEL):
     return response.output_text
 
 
+def _json_format(schema):
+    return {"format": {"type": "json_schema", "name": schema["name"],
+                       "schema": schema["schema"], "strict": True}}
+
+
+def ask_json(prompt, schema, model=DEFAULT_MODEL):
+    """Text-only request with structured output. Returns parsed JSON.
+
+    Not cached yet (see FOLLOWUPS.md).
+    """
+    response = get_client().responses.create(
+        model=model, input=prompt, text=_json_format(schema))
+    return json.loads(response.output_text)
+
+
 def image_to_data_url(image_path, max_side=MAX_IMAGE_SIDE):
     """Load an image upright, downscale it, return a base64 JPEG data URL.
 
@@ -97,12 +112,7 @@ def ask_with_image(prompt, image_path, schema=None, model=DEFAULT_MODEL,
         }],
     }
     if schema:
-        request["text"] = {"format": {
-            "type": "json_schema",
-            "name": schema["name"],
-            "schema": schema["schema"],
-            "strict": True,
-        }}
+        request["text"] = _json_format(schema)
 
     response = get_client().responses.create(**request)
     text = response.output_text

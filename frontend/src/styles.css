@@ -222,3 +222,10 @@ button.danger:hover:not(:disabled) { background: #f8d0d0; }
 .grade-fields label.grow { flex: 1; min-width: 200px; }
 .grade-fields input { width: 8em; }
 .warn-text { color: #6b5200; }
+
+/* Editing code on the review page. */
+.code-editor { display: flex; flex-direction: column; gap: 8px; }
+.code-editor textarea { width: 100%; box-sizing: border-box; white-space: pre; overflow-x: auto; tab-size: 4; line-height: 1.4; }
+.model-reading { margin-top: 8px; font-size: 0.9rem; }
+.model-reading summary { cursor: pointer; color: #555; }
+.fix-changes { margin: 0 0 8px; padding-left: 20px; font-size: 0.9rem; }

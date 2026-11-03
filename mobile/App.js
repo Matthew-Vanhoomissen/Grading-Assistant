@@ -10,6 +10,7 @@ import AssignmentsScreen from './src/screens/AssignmentsScreen';
 import CaptureScreen from './src/screens/CaptureScreen';
 import ConnectScreen from './src/screens/ConnectScreen';
 import QuestionsScreen from './src/screens/QuestionsScreen';
+import RapidFireScreen from './src/screens/RapidFireScreen';
 import { loadSettings } from './src/storage';
 
 export default function App() {
@@ -17,16 +18,27 @@ export default function App() {
   const [settings, setSettings] = useState(null); // settings that passed the ping
   const [assignment, setAssignment] = useState(null);
   const [question, setQuestion] = useState(null);
+  const [rapidQuestions, setRapidQuestions] = useState(null); // set while in rapid fire mode
   const [onConnect, setOnConnect] = useState(true);
 
   useEffect(() => {
     loadSettings().then(setSavedSettings);
   }, []);
 
-  const screen = onConnect || !settings ? 'connect' : !assignment ? 'assignments' : !question ? 'questions' : 'capture';
+  const screen =
+    onConnect || !settings
+      ? 'connect'
+      : !assignment
+        ? 'assignments'
+        : rapidQuestions
+          ? 'rapid'
+          : !question
+            ? 'questions'
+            : 'capture';
 
   function back() {
     if (screen === 'capture') setQuestion(null);
+    else if (screen === 'rapid') setRapidQuestions(null);
     else if (screen === 'questions') setAssignment(null);
     else if (screen === 'assignments') setOnConnect(true);
     else return false;
@@ -54,6 +66,7 @@ export default function App() {
           if (!settings || s.serverUrl !== settings.serverUrl) {
             setAssignment(null);
             setQuestion(null);
+            setRapidQuestions(null);
           }
           setSettings(s);
           setOnConnect(false);
@@ -70,7 +83,17 @@ export default function App() {
         settings={settings}
         assignment={assignment}
         onPick={setQuestion}
+        onRapidFire={setRapidQuestions}
         onBack={() => setAssignment(null)}
+      />
+    );
+  } else if (screen === 'rapid') {
+    content = (
+      <RapidFireScreen
+        settings={settings}
+        assignment={assignment}
+        questions={rapidQuestions}
+        onBack={() => setRapidQuestions(null)}
       />
     );
   } else {

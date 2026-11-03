@@ -59,6 +59,26 @@ There are two separate connections, and one working doesn't mean the other does:
    It refreshes every 3 s while anything is `queued` or `processing`, and
    shows `error_message` for errors.
 
+### Rapid fire (one student at a time)
+
+The steps above go question by question, photographing the whole class for
+one question at a time. To do one student's whole paper instead, tap
+**Rapid fire (by student)** on the Questions screen.
+
+1. Type the student label and tap **Start**. If that label already has photos
+   on any question of this assignment, the app lists those questions. You can
+   then tap **Change label** or **Continue anyway**.
+2. The camera opens for question 1. The preview shows the student and
+   "1 of N: question title". **Use photo** uploads it and opens the camera for
+   the next question. **Retake** shoots again, and **Skip question** moves on
+   without uploading (for a blank answer).
+3. If an upload fails, you stay on that question with **Retry upload**. Nothing
+   moves on until it succeeds or you skip.
+4. After the last question, a summary shows Uploaded, Skipped, or Failed for
+   each one. Tap **Next student** to start over with an empty label.
+
+Back leaves rapid fire at any point. Photos already uploaded stay uploaded.
+
 Android's back button steps back one screen.
 
 ## Config

@@ -8,7 +8,7 @@ export function questionTitle(question) {
   return question.title || `Question ${question.position}`;
 }
 
-export default function QuestionsScreen({ settings, assignment, onPick, onBack }) {
+export default function QuestionsScreen({ settings, assignment, onPick, onRapidFire, onBack }) {
   const [questions, setQuestions] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -41,6 +41,15 @@ export default function QuestionsScreen({ settings, assignment, onPick, onBack }
         ListHeaderComponent={
           <View style={{ gap: 12 }}>
             {error ? <Message kind="error">{error.message}</Message> : null}
+            {questions && questions.length ? (
+              <>
+                <Button title="Rapid fire (by student)" onPress={() => onRapidFire(questions)} />
+                <Text style={styles.hint}>
+                  Enter a student once and photograph every question in order. Or pick one question below
+                  to photograph the whole class for it.
+                </Text>
+              </>
+            ) : null}
             <Button title="Refresh" variant="secondary" onPress={load} loading={loading} />
           </View>
         }

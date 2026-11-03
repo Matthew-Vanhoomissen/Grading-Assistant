@@ -83,6 +83,17 @@ const real = {
   gradeSubmission(id, fields) {
     return request('POST', `/api/submissions/${id}/grade`, fields)
   },
+  // Fix a misread: { code } replaces the transcription and re-scores. Returns the full submission.
+  rerunSubmission(id, fields) {
+    return request('POST', `/api/submissions/${id}/rerun`, fields)
+  },
+  // Corrected version for comparison: { code }; scores don't change. Returns the full submission.
+  setCorrected(id, fields) {
+    return request('POST', `/api/submissions/${id}/corrected`, fields)
+  },
+  discardCorrected(id) {
+    return request('DELETE', `/api/submissions/${id}/corrected`)
+  },
   deleteSubmission(id) {
     return request('DELETE', `/api/submissions/${id}`)
   },

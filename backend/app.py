@@ -20,7 +20,8 @@ from dotenv import load_dotenv
 from flask import Flask, Response, abort, jsonify, request, send_file
 
 from backend import db, gradebook, worker
-from backend.pipeline import rerun_submission, rescore_question
+from backend.pipeline import (clear_corrected, rerun_submission,
+                              rescore_question, set_corrected)
 from backend.scoring import suggest_score
 
 load_dotenv()
@@ -304,15 +305,53 @@ def submission_image(submission_id):
     return send_file(_submission_or_404(submission_id)["image_path"])
 
 
+def _busy(sub):
+    """409 while the worker owns a submission; it would overwrite edits."""
+    if sub and sub["status"] in ("queued", "processing"):
+        return jsonify(
+            {"error": "submission is still queued/processing"}), 409
+    return None
+
+
+def _code_from_body():
+    body = request.get_json(silent=True) or {}
+    code = body.get("code")
+    return code if isinstance(code, str) else None
+
+
 @app.post("/api/submissions/<int:submission_id>/rerun")
 def rerun(submission_id):
-    """Re-run tests on code the professor edited (e.g. a fixed misread)."""
-    _submission_or_404(submission_id)
-    body = request.get_json(silent=True) or {}
-    if not isinstance(body.get("code"), str):
+    """Fix a misread: the edit replaces the transcription and re-scores."""
+    busy = _busy(_submission_or_404(submission_id))
+    if busy:
+        return busy
+    code = _code_from_body()
+    if code is None:
         return _bad_request("code is required")
-    rerun_submission(submission_id, body["code"])
+    rerun_submission(submission_id, code)
     return get_submission(submission_id)
+
+
+@app.post("/api/submissions/<int:submission_id>/corrected")
+def run_corrected(submission_id):
+    """Store and test a corrected version. For comparison only."""
+    busy = _busy(_submission_or_404(submission_id))
+    if busy:
+        return busy
+    code = _code_from_body()
+    if code is None:
+        return _bad_request("code is required")
+    set_corrected(submission_id, code)
+    return get_submission(submission_id)
+
+
+@app.delete("/api/submissions/<int:submission_id>/corrected")
+def discard_corrected(submission_id):
+    busy = _busy(db.get_submission(submission_id))
+    if busy:
+        return busy
+    clear_corrected(submission_id)
+    return "", 204
 
 
 @app.post("/api/submissions/<int:submission_id>/requeue")
@@ -325,7 +364,9 @@ def requeue(submission_id):
 
 @app.post("/api/submissions/<int:submission_id>/grade")
 def grade(submission_id):
-    _submission_or_404(submission_id)
+    busy = _busy(_submission_or_404(submission_id))
+    if busy:
+        return busy
     body = request.get_json(silent=True) or {}
     try:
         final_score = float(body["final_score"])

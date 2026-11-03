@@ -52,8 +52,12 @@ and submissions (one photo per student per question). SQLite, five tables:
 - An assignment's `total_points` is the sum of its questions' `max_points`,
   computed on read rather than stored.
 - `status` is `queued`, `processing`, `ready`, `graded`, or `error`.
-- `version` is `original` or `corrected` (the syntax-fix toggle).
-- `flags` is JSON: the model's `uncertain_lines` plus the `ast` static checks.
+- `version` is `original` (the transcription, which sets the suggested
+  score) or `corrected` (the corrected version, for comparison only).
+- `flags` is JSON: the model's `uncertain_lines` plus the `ast`
+  `static_flags`. After the first rerun it also holds `model_transcription`
+  (what the model read; `uncertain_lines` refer to it). While the corrected
+  version is the model's syntax fix, it holds `syntax_fix.changes`.
 
 ## API
 
@@ -73,6 +77,7 @@ and submissions (one photo per student per question). SQLite, five tables:
 | GET, DELETE | `/api/submissions/<id>` | |
 | GET | `/api/submissions/<id>/image` | |
 | POST | `/api/submissions/<id>/rerun` | `{code}` |
+| POST, DELETE | `/api/submissions/<id>/corrected` | `{code}` (POST) |
 | POST | `/api/submissions/<id>/requeue` | |
 | POST | `/api/submissions/<id>/grade` | `{final_score, notes?}` |
 | GET | `/api/gradebook`, `/api/gradebook.csv` | optional `?assignment_ids=1,2` |
@@ -81,6 +86,31 @@ Deleting an assignment or question also deletes everything under it,
 including uploaded photos. Changing a question's `max_points` or
 `exact_match` re-scores its submissions from the stored outputs (no code is
 re-run); final scores already given are kept.
+
+### Editing code
+
+The review screen edits code in two separate ways:
+
+- **Fix a misread** (`rerun`): the edit replaces the transcription and
+  re-scores the original, since a student shouldn't lose points for a model
+  mistake. The final score is kept. The model's first reading is saved in
+  `flags.model_transcription`.
+- **Corrected version** (`corrected`): what the student's code does with
+  their mistake fixed. Tests run as version `corrected`. It never changes the
+  transcription, suggested score, verdict, final score, or status; the
+  professor decides any partial credit. `DELETE` discards it.
+
+`rerun`, `corrected`, and `grade` return 409 while a submission is queued or
+processing, since the worker would overwrite the edit. A requeue starts
+fresh and clears the corrected version.
+
+**Model syntax fix (off by default).** With `SYNTAX_FIX=1` in `.env`, the
+worker makes one text-only model call for a transcription that doesn't
+parse, asking for the smallest change that makes it parse. The fix is kept
+as the corrected version only if it parses and changes at most
+`MAX_FIX_CHANGED_LINES` lines (`backend/agent.py`); otherwise it's thrown
+away. It never runs on code that parses, because a logic bug is what's being
+graded. If the call fails, the submission is still `ready`.
 
 ### Gradebook
 
