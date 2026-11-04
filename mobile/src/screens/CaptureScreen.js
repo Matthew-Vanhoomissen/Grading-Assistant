@@ -1,3 +1,12 @@
+/**
+ * Single-question capture: photograph a stack of papers for one question,
+ * one student after another.
+ *
+ * Steps: 'idle' (Take photo) -> 'preview' (Retake / Use photo) -> 'label'
+ * (type the student label, Submit). A successful upload returns to 'idle' on
+ * the same question with the label cleared, ready for the next paper.
+ */
+
 import { useEffect, useRef, useState } from 'react';
 import {
   Image,
@@ -16,28 +25,35 @@ import { Button, Message, Screen, formatPoints, styles } from '../ui';
 import { questionTitle } from './QuestionsScreen';
 import RecentUploads from './RecentUploads';
 
-// Steps: 'idle' (take photo) -> 'preview' (retake / use) -> 'label' (submit).
-// After a successful upload it returns to 'idle' for the same question.
+/**
+ * @param {object} props
+ * @param {import('../api').Settings} props.settings
+ * @param {{ title: string }} props.assignment
+ * @param {{ id: number, title: string, position: number, max_points: number }} props.question
+ * @param {() => void} props.onBack
+ */
 export default function CaptureScreen({ settings, assignment, question, onBack }) {
-  const [step, setStep] = useState('idle');
-  const [photo, setPhoto] = useState(null);
+  const [step, setStep] = useState('idle'); // 'idle' | 'preview' | 'label'
+  const [photo, setPhoto] = useState(null); // { uri, width, height } of the cached JPEG
   const [label, setLabel] = useState('');
-  const [busy, setBusy] = useState(false); // camera or image processing
+  const [busy, setBusy] = useState(false); // camera open or image processing
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState(null); // { kind, text, openSettings? }
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [refreshKey, setRefreshKey] = useState(0); // bumped to reload Recent uploads
 
-  // Delete any photo still in the cache when leaving the screen.
+  // Deletes any photo still in the cache when the screen unmounts. A ref is
+  // used because the cleanup runs after the last render's state is gone.
   const photoRef = useRef(null);
   photoRef.current = photo;
   useEffect(() => () => deletePhoto(photoRef.current && photoRef.current.uri), []);
 
+  /** Opens the camera and moves to the preview step with the new photo. */
   async function capture() {
     setMessage(null);
     setBusy(true);
     try {
       const taken = await takePhoto();
-      if (!taken) return; // backed out of the camera
+      if (!taken) return; // camera closed without a photo
       deletePhoto(photo && photo.uri);
       setPhoto(taken);
       setStep('preview');
@@ -52,6 +68,10 @@ export default function CaptureScreen({ settings, assignment, question, onBack }
     }
   }
 
+  /**
+   * Uploads the photo under the typed label. On success, resets for the next
+   * paper. On failure, keeps the photo and label so Submit can be retried.
+   */
   async function submit() {
     const trimmed = label.trim();
     if (!trimmed) {
@@ -69,7 +89,8 @@ export default function CaptureScreen({ settings, assignment, question, onBack }
       setMessage({ kind: 'success', text: `Uploaded "${trimmed}". Ready for the next photo.` });
       setRefreshKey((k) => k + 1);
     } catch (e) {
-      // A timed-out upload may still have reached the server.
+      // A timed-out upload may still have reached the server, so point the
+      // user at Recent uploads (reloaded below) before they retry.
       const text =
         e.kind === 'timeout'
           ? `${e.message} Check Recent uploads before retrying, it may have gone through.`
@@ -81,6 +102,7 @@ export default function CaptureScreen({ settings, assignment, question, onBack }
     }
   }
 
+  /** Discards the current photo and opens the camera again. */
   function retake() {
     deletePhoto(photo && photo.uri);
     setPhoto(null);
@@ -88,8 +110,11 @@ export default function CaptureScreen({ settings, assignment, question, onBack }
     capture();
   }
 
+  // Portrait 3:4 is the fallback when the photo's size is unknown.
   const aspect = photo && photo.width && photo.height ? photo.width / photo.height : 3 / 4;
 
+  // The header Back button is hidden mid-upload so leaving the screen can't
+  // delete the photo while it is being sent.
   return (
     <Screen title={questionTitle(question)} onBack={uploading ? undefined : onBack}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>

@@ -1,14 +1,30 @@
+// Right setup panel: the selected question's settings and test cases.
+
 import { useState } from 'react'
 import { api } from '../api.js'
 import { callApi } from '../callApi.js'
 import { fmtPoints, questionLabel } from '../format.js'
 import ConfirmDialog from './ConfirmDialog.jsx'
 
-// Right setup panel: the selected question's details and test cases, or the
-// add-question form. `detail` is GET /api/assignments/:id (questions include
-// their test_cases); after any change, `onChanged()` re-fetches it.
-// `onEdited()` runs after a PATCH, since changing points or match mode
-// re-scores the question's submissions.
+/**
+ * Shows the selected question's points, match mode, prompt, and test cases,
+ * with Edit (a dropdown form) and Delete. Test cases can be added and deleted
+ * here. While `creating`, or when the assignment has no questions yet, it
+ * shows the add-question form instead.
+ *
+ * @param {object} props
+ * @param {object | null} props.detail - GET /api/assignments/:id; its questions include test_cases.
+ * @param {number | null} props.questionId - The selected question.
+ * @param {boolean} props.creating - Show the add-question form.
+ * @param {boolean} props.creatingAssignment - True while the assignment itself is being created.
+ * @param {() => void} props.onCancelCreate - Closes the add-question form.
+ * @param {(question: object) => void} props.onCreated - Receives the new question.
+ * @param {(id: number) => void} props.onDeleted - Called after the question is deleted.
+ * @param {() => void} props.onChanged - Re-fetches `detail` after test cases change.
+ * @param {() => void} props.onEdited - Called after a successful edit. Changing points or match mode re-scores
+ *   the question's submissions, so the caller refreshes more than `detail`.
+ * @param {(label: string, body: any) => void} props.onResponse - Reports to the Raw JSON panel.
+ */
 export default function QuestionPanel({
   detail,
   questionId,
@@ -28,9 +44,9 @@ export default function QuestionPanel({
   const call = (label, fn) => callApi(label, fn, { onResponse, setError })
 
   const question = detail?.questions.find((q) => q.id === questionId) ?? null
-  // An assignment with no questions goes straight to the form.
+  // An assignment with no questions goes straight to the add-question form.
   const showForm = detail != null && (creating || detail.questions.length === 0)
-  // Tied to the question id, so selecting another question closes the form.
+  // Editing is tied to a question id, so selecting another question closes the edit form.
   const editing = question != null && !showForm && editingId === question.id
 
   async function handleCreate(fields) {
@@ -51,7 +67,7 @@ export default function QuestionPanel({
   async function handleAddTest(fields) {
     const res = await call(`POST /api/questions/${question.id}/tests`, () => api.addTestCase(question.id, fields))
     if (!res) return false
-    await onChanged() // the POST returns only the new id
+    await onChanged() // the response is only the new id
     return true
   }
 
@@ -60,14 +76,20 @@ export default function QuestionPanel({
     if (res) await onChanged()
   }
 
+  /** Counts the question's submissions so the confirmation says exactly what will be deleted. */
   async function askDelete() {
     let submissions = null
     try {
       submissions = (await api.listSubmissions(question.id)).body.length
     } catch {
-      // Count is informational; still allow the delete.
+      // The count is informational, so a failed lookup still allows the delete.
     }
-    setPendingDelete({ id: question.id, label: questionLabel(question), tests: question.test_cases.length, submissions })
+    setPendingDelete({
+      id: question.id,
+      label: questionLabel(question),
+      tests: question.test_cases.length,
+      submissions,
+    })
   }
 
   async function confirmDelete() {
@@ -85,7 +107,9 @@ export default function QuestionPanel({
   else if (showForm)
     body = (
       <>
-        {detail.questions.length === 0 && <p className="hint">This assignment has no questions yet. Add the first one.</p>}
+        {detail.questions.length === 0 && (
+          <p className="hint">This assignment has no questions yet. Add the first one.</p>
+        )}
         <QuestionForm
           titlePlaceholder={`Question ${detail.questions.length + 1}`}
           submitLabel={`Add question ${detail.questions.length + 1}`}
@@ -207,8 +231,20 @@ export default function QuestionPanel({
   )
 }
 
-// Used both to add a question and, with `initial`, to edit one. Edits send
-// only the fields that changed, and Save stays disabled until something does.
+/**
+ * Question fields form, used both to add a question and, with `initial`, to
+ * edit one. An edit sends only the fields that changed, and Save stays disabled
+ * until something does.
+ *
+ * @param {object} props
+ * @param {object} [props.initial] - The question being edited; omit to add a new one.
+ * @param {string} props.titlePlaceholder - Shown in the empty title field ("Question N").
+ * @param {string} props.submitLabel - Submit button label.
+ * @param {string} props.savingLabel - Submit button label while saving.
+ * @param {string} [props.note] - Hint shown above the buttons.
+ * @param {(fields: object) => Promise<boolean>} props.onSubmit - Saves the (changed) fields.
+ * @param {(() => void) | null} props.onCancel - Closes the form; null hides Cancel.
+ */
 function QuestionForm({ initial, titlePlaceholder, submitLabel, savingLabel, note, onSubmit, onCancel }) {
   const [title, setTitle] = useState(initial?.title ?? '')
   const [maxPoints, setMaxPoints] = useState(initial ? String(initial.max_points) : '10')
@@ -217,6 +253,7 @@ function QuestionForm({ initial, titlePlaceholder, submitLabel, savingLabel, not
   const [saving, setSaving] = useState(false)
 
   const fields = { title: title.trim(), max_points: Number(maxPoints), prompt, exact_match: exactMatch }
+  // exact_match comes back from the backend as 0/1, so compare it as a boolean.
   const changed = initial
     ? Object.fromEntries(
         Object.entries(fields).filter(([k, v]) => (k === 'exact_match' ? v !== Boolean(initial[k]) : v !== initial[k])),
@@ -239,7 +276,14 @@ function QuestionForm({ initial, titlePlaceholder, submitLabel, savingLabel, not
       </label>
       <label>
         Max points
-        <input type="number" min="0" step="any" value={maxPoints} onChange={(e) => setMaxPoints(e.target.value)} required />
+        <input
+          type="number"
+          min="0"
+          step="any"
+          value={maxPoints}
+          onChange={(e) => setMaxPoints(e.target.value)}
+          required
+        />
       </label>
       <label>
         Prompt
@@ -264,6 +308,13 @@ function QuestionForm({ initial, titlePlaceholder, submitLabel, savingLabel, not
   )
 }
 
+/**
+ * Add-test-case form (stdin input and expected output). Clears itself after a
+ * successful add.
+ *
+ * @param {object} props
+ * @param {(fields: {input: string, expected_output: string}) => Promise<boolean>} props.onSubmit - Adds the test case.
+ */
 function AddTestForm({ onSubmit }) {
   const [input, setInput] = useState('')
   const [expected, setExpected] = useState('')

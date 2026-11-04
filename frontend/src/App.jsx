@@ -1,3 +1,6 @@
+// Root component: the Grading view (assignment setup, upload, and the review
+// page for one submission) and the Gradebook view.
+
 import { useEffect, useState } from 'react'
 import { api, USE_MOCK } from './api.js'
 import { SCENARIOS, setScenario } from './mockApi.js'
@@ -13,9 +16,16 @@ import Gradebook from './components/Gradebook.jsx'
 import GradePanel from './components/GradePanel.jsx'
 import { questionLabel } from './format.js'
 
+// How often the open submission is re-fetched while the worker processes it.
 const POLL_MS = 1500
+// Statuses after which the worker is finished with a submission; polling stops and editing is allowed.
 const DONE = ['ready', 'graded', 'error']
 
+/**
+ * Owns the app-wide state: the assignment list, the selected assignment's
+ * detail and question, the upload form, the open submission (polled until
+ * processing finishes), and the last backend response for the Raw JSON panel.
+ */
 export default function App() {
   const [assignments, setAssignments] = useState(null) // null while loading
   const [assignmentsError, setAssignmentsError] = useState(null)
@@ -34,22 +44,23 @@ export default function App() {
   const [submissionVersion, setSubmissionVersion] = useState(0) // bump to re-fetch the open submission
   const [raw, setRaw] = useState(null) // { label, body } of the last backend response
   const [requestError, setRequestError] = useState(null)
-  const [mockScenario, setMockScenario] = useState('ready_plain')
+  const [mockScenario, setMockScenario] = useState('ready_plain') // final state for the next mock upload
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [listRefresh, setListRefresh] = useState(0)
+  const [listRefresh, setListRefresh] = useState(0) // bump to reload the sidebar
   const [submissionRows, setSubmissionRows] = useState(null) // the sidebar's list, for Confirm & Next
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [view, setView] = useState('grading') // 'grading' | 'gradebook'
 
+  /** Closes the review page and clears its error. */
   function clearSubmission() {
     setSubmission(null)
     setSubmissionId(null)
     setRequestError(null)
   }
 
+  /** Opens an assignment. The open submission belongs to the old one, so it is closed. */
   function selectAssignment(id) {
-    // Submissions belong to a question in this assignment, so switching clears the current one.
     setCreatingAssignment(false)
     if (id === assignmentId) return
     clearSubmission()
@@ -58,6 +69,7 @@ export default function App() {
     setAssignmentId(id)
   }
 
+  /** Selects a question (or null). The open submission belongs to the old one, so it is closed. */
   function selectQuestion(id) {
     setCreatingQuestion(false)
     if (id === questionId) return
@@ -67,7 +79,7 @@ export default function App() {
 
   const reloadDetail = () => setDetailVersion((v) => v + 1)
 
-  // Load the tab list once; start on the newest assignment, or the create form if there are none.
+  // Load the tab list once. Start on the newest assignment, or on the create form if there are none.
   useEffect(() => {
     let cancelled = false
     api
@@ -101,13 +113,13 @@ export default function App() {
     if (remaining.length === 0) setCreatingAssignment(true)
   }
 
-  // Load the selected assignment's questions and test cases. Clearing only on
-  // an assignment switch (not on reloads) avoids flicker after edits.
+  // Clear the detail only when switching assignments, not on reloads, so edits don't flicker.
   useEffect(() => {
     setDetail(null)
     setDetailError(null)
   }, [assignmentId])
 
+  // Load the selected assignment's questions and test cases, and reload them when detailVersion changes.
   useEffect(() => {
     if (assignmentId == null) return
     let cancelled = false
@@ -118,7 +130,7 @@ export default function App() {
         setRaw({ label: `GET /api/assignments/${assignmentId} -> ${res.status}`, body: res.body })
         setDetail(res.body)
         setDetailError(null)
-        // Keep the tab list's computed totals in step with question edits.
+        // Keep the tab tooltips' question count and total points in step with question edits.
         const { id, question_count, total_points } = res.body
         setAssignments((prev) => prev?.map((a) => (a.id === id ? { ...a, question_count, total_points } : a)))
       })
@@ -132,7 +144,7 @@ export default function App() {
     }
   }, [assignmentId, detailVersion])
 
-  // Default to the first question whenever the current one isn't in this assignment.
+  // Fall back to the first question whenever the selected one isn't in this assignment.
   useEffect(() => {
     if (!detail) return
     if (!detail.questions.some((q) => q.id === questionId)) selectQuestion(detail.questions[0]?.id ?? null)
@@ -143,8 +155,8 @@ export default function App() {
     reloadDetail()
   }
 
+  /** Selects the next question after a delete, or the previous one if the deleted question was last. */
   function handleQuestionDeleted(id) {
-    // Move to the next question, or the previous one if it was last.
     const qs = detail.questions
     const i = qs.findIndex((q) => q.id === id)
     const neighbor = qs[i + 1] ?? qs[i - 1] ?? null
@@ -152,8 +164,10 @@ export default function App() {
     reloadDetail()
   }
 
-  // Editing points or match mode re-scores the question's submissions, so
-  // refresh the sidebar scores and the open review along with the detail.
+  /**
+   * Refreshes everything a question edit can change. Editing points or match mode re-scores the
+   * question's submissions, so the sidebar scores and the open review reload along with the detail.
+   */
   function handleQuestionEdited() {
     reloadDetail()
     setListRefresh((n) => n + 1)
@@ -161,7 +175,7 @@ export default function App() {
   }
 
   const question = detail?.questions.find((q) => q.id === questionId) ?? null
-  // Uploads go to the highlighted question; not while a create form is open.
+  // Uploads go to the selected question, and are disabled while a create form is open.
   const uploadTarget = !creatingAssignment && !creatingQuestion ? question : null
 
   function selectSubmission(id) {
@@ -170,6 +184,7 @@ export default function App() {
     setSubmissionId(id)
   }
 
+  /** Uploads the chosen photo to the selected question and opens the new submission. */
   async function handleUpload(e) {
     e.preventDefault()
     if (!file || uploadTarget == null) return
@@ -209,8 +224,12 @@ export default function App() {
     }
   }
 
-  // Next submission after the open one (wrapping around) that is done
-  // processing but not graded yet.
+  /**
+   * Finds the target for Confirm & Next: the next submission in sidebar order after the open one,
+   * wrapping around, that is done processing but not graded yet.
+   *
+   * @returns {number | null} Its id, or null if there is none.
+   */
   function nextUngradedId() {
     if (!submissionRows || submission == null) return null
     const i = submissionRows.findIndex((s) => s.id === submission.id)
@@ -218,6 +237,13 @@ export default function App() {
     return ordered.find((s) => s.id !== submission.id && s.status !== 'graded' && DONE.includes(s.status))?.id ?? null
   }
 
+  /**
+   * Saves the open submission's grade, then opens the next ungraded one if `next` is set.
+   *
+   * @param {{final_score: number, notes: string | null}} fields - The grade to save.
+   * @param {boolean} next - True for Confirm & Next.
+   * @returns {Promise<boolean>} Whether the save succeeded.
+   */
   async function gradeSubmission(fields, next) {
     const id = submission.id
     const url = `/api/submissions/${id}/grade`
@@ -236,15 +262,20 @@ export default function App() {
     }
   }
 
-  // Edits on the review page: both return the full submission. Returns an
-  // error message for the editor to show, or null.
+  /**
+   * Runs a code edit from the review page (rerun or corrected); both routes return the full submission.
+   *
+   * @param {string} path - Route suffix, for the Raw JSON label.
+   * @param {() => Promise<{status: number, body: object}>} call - The API call.
+   * @returns {Promise<string | null>} An error message for the editor to show, or null on success.
+   */
   async function runEditedCode(path, call) {
     const url = `/api/submissions/${submission.id}/${path}`
     try {
       const res = await call()
       setRaw({ label: `POST ${url} -> ${res.status}`, body: res.body })
       setSubmission(res.body)
-      setListRefresh((n) => n + 1) // a rerun changes the suggested score
+      setListRefresh((n) => n + 1) // a rerun changes the sidebar's suggested score
       return null
     } catch (err) {
       setRaw({ label: `POST ${url} (failed)`, body: err.body ?? null })
@@ -255,19 +286,20 @@ export default function App() {
   const rerunCode = (code) => runEditedCode('rerun', () => api.rerunSubmission(submission.id, { code }))
   const setCorrectedCode = (code) => runEditedCode('corrected', () => api.setCorrected(submission.id, { code }))
 
+  /** Deletes the corrected version; the 204 has no body, so the submission is re-fetched. */
   async function discardCorrectedCode() {
     const url = `/api/submissions/${submission.id}/corrected`
     try {
       const res = await api.discardCorrected(submission.id)
       setRaw({ label: `DELETE ${url} -> ${res.status}`, body: res.body })
-      setSubmissionVersion((v) => v + 1) // 204 has no body; re-fetch
+      setSubmissionVersion((v) => v + 1)
     } catch (err) {
       setRequestError(err.message)
       setRaw({ label: `DELETE ${url} (failed)`, body: err.body ?? null })
     }
   }
 
-  // Poll until the submission reaches a terminal status, then stop.
+  // Fetch the open submission, polling until the worker is done with it. submissionVersion forces a re-fetch.
   useEffect(() => {
     if (submissionId == null) return
     let cancelled = false
@@ -294,6 +326,7 @@ export default function App() {
     }
   }, [submissionId, submissionVersion])
 
+  // Last backend response, for telling frontend bugs from backend bugs. Shown in both views.
   const rawPanel = raw && (
     <details className="raw">
       <summary>Raw JSON ({raw.label})</summary>
@@ -414,17 +447,17 @@ export default function App() {
               )}
 
               {submission && (
-              <SubmissionView
-                key={submission.id}
-                submission={submission}
-                onDelete={() => setConfirmingDelete(true)}
-                hasNext={nextUngradedId() != null}
-                onGrade={gradeSubmission}
-                onRerun={rerunCode}
-                onSetCorrected={setCorrectedCode}
-                onDiscardCorrected={discardCorrectedCode}
-              />
-            )}
+                <SubmissionView
+                  key={submission.id}
+                  submission={submission}
+                  onDelete={() => setConfirmingDelete(true)}
+                  hasNext={nextUngradedId() != null}
+                  onGrade={gradeSubmission}
+                  onRerun={rerunCode}
+                  onSetCorrected={setCorrectedCode}
+                  onDiscardCorrected={discardCorrectedCode}
+                />
+              )}
 
               <ConfirmDialog
                 open={confirmingDelete && submission != null}
@@ -470,13 +503,27 @@ export default function App() {
   )
 }
 
+/**
+ * The review page for one submission: status, photo, transcription and
+ * corrected code (each editable), test results, and the final score form.
+ * Render with key={submission.id} so edit state resets per submission.
+ *
+ * @param {object} props
+ * @param {object} props.submission - The full submission from GET /api/submissions/:id.
+ * @param {() => void} props.onDelete - Opens the delete-submission confirmation.
+ * @param {boolean} props.hasNext - Whether Confirm & Next has a target.
+ * @param {Function} props.onGrade - Saves the grade; see GradePanel's onSave.
+ * @param {(code: string) => Promise<string | null>} props.onRerun - Fixes a misread; resolves to an error message or null.
+ * @param {(code: string) => Promise<string | null>} props.onSetCorrected - Runs a corrected version; same contract.
+ * @param {() => Promise<void>} props.onDiscardCorrected - Deletes the corrected version.
+ */
 function SubmissionView({ submission, onDelete, hasNext, onGrade, onRerun, onSetCorrected, onDiscardCorrected }) {
   const { id, student_label, status, transcription, flags, corrected_code, error_message, question } = submission
   const pending = !DONE.includes(status)
   const [editing, setEditing] = useState(null) // null | 'transcription' | 'corrected'
   const [confirmingDiscard, setConfirmingDiscard] = useState(false)
   const [discarding, setDiscarding] = useState(false)
-  // After the first misread fix, flags keep what the model read; uncertain_lines refer to that.
+  // After the first misread fix the backend saves the model's reading, and uncertain_lines refer to that.
   const edited = flags != null && 'model_transcription' in flags
   const uncertainLines = (flags?.uncertain_lines ?? []).map((u) => u.line)
   const syntaxErrors = (flags?.static_flags ?? []).filter((f) => f.reason.startsWith('syntax error'))
@@ -522,8 +569,8 @@ function SubmissionView({ submission, onDelete, hasNext, onGrade, onRerun, onSet
                 initial={transcription ?? ''}
                 note={
                   <>
-                    <strong>Fix a misread</strong> to match the photo. This replaces the transcription and re-scores
-                    it, since a model mistake shouldn't cost points.{' '}
+                    <strong>Fix a misread</strong> to match the photo. This replaces the transcription and re-scores it,
+                    since a model mistake shouldn't cost points.{' '}
                     {status === 'graded' && 'The final score you gave is kept; update it below if needed. '}
                     To see what fixing the student's own mistake would do, use the corrected version instead.
                   </>
@@ -554,7 +601,9 @@ function SubmissionView({ submission, onDelete, hasNext, onGrade, onRerun, onSet
               </>
             ) : (
               <p className="placeholder">
-                {pending ? 'Waiting for transcription...' : 'No transcription returned. Type the code from the photo to test it.'}
+                {pending
+                  ? 'Waiting for transcription...'
+                  : 'No transcription returned. Type the code from the photo to test it.'}
               </p>
             )}
           </div>
@@ -591,7 +640,9 @@ function SubmissionView({ submission, onDelete, hasNext, onGrade, onRerun, onSet
             ) : corrected_code != null ? (
               <>
                 <p className="hint">
-                  {flags?.syntax_fix ? 'Model syntax fix (comparison only):' : 'Edited by the professor (comparison only).'}
+                  {flags?.syntax_fix
+                    ? 'Model syntax fix (comparison only):'
+                    : 'Edited by the professor (comparison only).'}
                 </p>
                 {flags?.syntax_fix?.changes?.length > 0 && (
                   <ul className="fix-changes">
@@ -614,8 +665,11 @@ function SubmissionView({ submission, onDelete, hasNext, onGrade, onRerun, onSet
           open={confirmingDiscard}
           title="Discard corrected version?"
           busy={discarding}
-          message={<p>This removes the corrected code and its test results. The transcription and scores are not affected.</p>}
+          message={
+            <p>This removes the corrected code and its test results. The transcription and scores are not affected.</p>
+          }
           confirmLabel="Discard"
+          busyLabel="Discarding..."
           onConfirm={async () => {
             setDiscarding(true)
             await onDiscardCorrected()
@@ -632,6 +686,13 @@ function SubmissionView({ submission, onDelete, hasNext, onGrade, onRerun, onSet
   )
 }
 
+/**
+ * The submission's photo, linked to the full-size file. If the image fails to
+ * load, it says so instead of showing a broken image.
+ *
+ * @param {object} props
+ * @param {string} props.src - Image URL.
+ */
 function SubmissionImage({ src }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [src])

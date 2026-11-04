@@ -1,3 +1,9 @@
+/* Styles for the grading frontend. Plain CSS, no framework.
+   Layout breakpoints are container queries on .main, so they react to the
+   space left over by the submissions sidebar rather than the window width. */
+
+/* ---------- Base ---------- */
+
 * { box-sizing: border-box; }
 
 body {
@@ -7,11 +13,19 @@ body {
   color: #222;
 }
 
+header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 1.4rem; margin: 0; }
+h2 { font-size: 1rem; margin: 0 0 8px; }
+
+input:not([type=checkbox]):not([type=file]), textarea, select { font: inherit; padding: 4px 6px; }
+textarea { font-family: Consolas, Menlo, monospace; font-size: 0.9rem; resize: vertical; }
+
+/* ---------- Page layout ---------- */
+
 /* Wide enough that the main column keeps ~1400px next to the open sidebar. */
 .page { max-width: 1680px; margin: 0 auto; padding: 16px; }
 
-/* Main content left, submissions sidebar right. The breakpoints below are
-   container queries on .main, so they react to the space left by the sidebar. */
+/* Main content left, submissions sidebar right. */
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 12px; align-items: start; }
 .layout.sidebar-closed { grid-template-columns: minmax(0, 1fr) 36px; }
 .main { container-type: inline-size; min-width: 0; }
@@ -20,74 +34,56 @@ body {
   .layout, .layout.sidebar-closed { grid-template-columns: 1fr; }
 }
 
-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-h1 { font-size: 1.4rem; margin: 0; }
-h2 { font-size: 1rem; margin: 0 0 8px; }
+/* ---------- Shared building blocks ---------- */
+
+.panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px; min-width: 0; }
+.panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.panel-header h2 { margin: 0; }
+
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.stack { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.stack label, .add-test label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
+.stack label.inline { flex-direction: row; align-items: center; }
+.push-right { margin-left: auto; }
+
+.empty, .placeholder { color: #777; font-style: italic; }
+.hint { color: #777; font-size: 0.85rem; }
+.warn-text { color: #6b5200; }
+
+.banner { padding: 8px 12px; border-radius: 4px; margin: 8px 0; }
+.banner.error { background: #fde8e8; border: 1px solid #e5a0a0; color: #8a1f1f; }
+.banner.warn { background: #fff3cd; border: 1px solid #e0c060; color: #6b5200; font-family: monospace; }
+
+/* Table style shared by test cases, test results, and the gradebook. */
+.tests { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.tests th, .tests td { border-bottom: 1px solid #ddd; padding: 6px; text-align: left; vertical-align: top; }
+.tests pre { margin: 0; font-family: Consolas, Menlo, monospace; white-space: pre-wrap; }
+
+/* Destructive buttons (delete, discard). */
+button.danger { color: #8a1f1f; border: 1px solid #e5a0a0; background: #fde8e8; border-radius: 3px; cursor: pointer; }
+button.danger:hover:not(:disabled) { background: #f8d0d0; }
+
+/* A link styled like the browser's default button (Download CSV). */
+.button-link {
+  display: inline-block; padding: 1px 8px; border: 1px solid #767676; border-radius: 3px;
+  background: #efefef; color: #000; text-decoration: none; font-size: 0.85rem;
+}
+.button-link:hover { background: #e5e5e5; }
+
+/* ---------- Header ---------- */
 
 .mock-badge {
   background: #fff3cd; border: 1px solid #e0c060; color: #6b5200;
   padding: 2px 8px; border-radius: 4px; font-size: 0.8rem;
 }
 
-.upload {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
-  margin: 16px 0; padding: 12px; background: #fff; border: 1px solid #ddd; border-radius: 6px;
-}
+/* Grading / Gradebook switch. */
+.view-switch { display: flex; gap: 4px; margin-left: auto; }
+.view-switch button.active { background: #e7f0ff; border-color: #8fb3e8; font-weight: bold; }
 
-.upload .label-input { width: 260px; max-width: 100%; }
+/* ---------- Assignment tabs ---------- */
 
-.empty, .placeholder { color: #777; font-style: italic; }
-.hint { color: #777; font-size: 0.85rem; }
-
-.banner { padding: 8px 12px; border-radius: 4px; margin: 8px 0; }
-.banner.error { background: #fde8e8; border: 1px solid #e5a0a0; color: #8a1f1f; }
-.banner.warn { background: #fff3cd; border: 1px solid #e0c060; color: #6b5200; font-family: monospace; }
-
-.status-row { margin-bottom: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; }
-.status-row .danger { margin-left: auto; }
-.status { font-weight: bold; padding: 1px 8px; border-radius: 4px; }
-.status-queued { background: #e2e3e5; }
-.status-processing { background: #cfe2ff; }
-.status-ready { background: #d1e7dd; }
-.status-error { background: #f8d7da; }
-.status-graded { background: #e0d4f5; }
-
-/* Photo left, code right; stacks on narrow screens. */
-.review { display: grid; grid-template-columns: minmax(280px, 1fr) 2fr; gap: 12px; }
-.code-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-width: 0; }
-
-/* Stack the two code panels first so the photo stays beside the code as long as possible. */
-@container (max-width: 1000px) {
-  .code-panels { grid-template-columns: 1fr; }
-}
-@container (max-width: 700px) {
-  .review { grid-template-columns: 1fr; }
-}
-
-.panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px; min-width: 0; }
-.image-panel img { width: 100%; height: auto; border: 1px solid #ccc; display: block; }
-
-.code {
-  margin: 0; padding: 8px 0; background: #fafafa; border: 1px solid #ddd;
-  font-family: Consolas, Menlo, monospace; font-size: 0.9rem; line-height: 1.5;
-  overflow-x: auto;
-}
-.code .line { display: flex; white-space: pre; }
-.code .gutter {
-  flex: none; width: 3em; padding-right: 0.75em; margin-right: 0.75em; text-align: right;
-  color: #999; user-select: none; border-right: 1px solid #ddd;
-}
-.code .line.uncertain { background: #fff3a8; }
-.code .line.uncertain .gutter { color: #8a6d00; font-weight: bold; }
-
-/* Assignment + test cases, above the upload box. Same panels as the review row. */
-.setup { display: grid; grid-template-columns: minmax(280px, 1fr) 2fr; gap: 12px; margin-top: 16px; }
-@container (max-width: 1000px) {
-  .setup { grid-template-columns: 1fr; }
-}
-
-/* Assignment tabs across the top. The tabs scroll sideways when there are many;
-   "+ New" stays pinned to their right. */
+/* The tabs scroll sideways when there are many; "+ New" stays pinned to their right. */
 .tabs-bar { display: flex; align-items: flex-end; gap: 4px; margin-top: 16px; padding: 0 2px; border-bottom: 1px solid #ddd; }
 .tabs { display: flex; align-items: flex-end; gap: 4px; min-width: 0; overflow-x: auto; }
 .tab {
@@ -101,19 +97,19 @@ h2 { font-size: 1rem; margin: 0 0 8px; }
 .tabs-loading { padding: 6px; }
 .tabs .banner { flex: 1; margin: 4px 0; }
 
+/* ---------- Setup panels (assignment and question) ---------- */
+
+/* Same column split as the review row below. */
+.setup { display: grid; grid-template-columns: minmax(280px, 1fr) 2fr; gap: 12px; margin-top: 16px; }
+@container (max-width: 1000px) {
+  .setup { grid-template-columns: 1fr; }
+}
+
 .assignment-title { font-size: 1.05rem; }
-.push-right { margin-left: auto; }
-
-.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.stack { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-.stack label, .add-test label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
-.stack label.inline { flex-direction: row; align-items: center; }
-input:not([type=checkbox]):not([type=file]), textarea, select { font: inherit; padding: 4px 6px; }
-textarea { font-family: Consolas, Menlo, monospace; font-size: 0.9rem; resize: vertical; }
-
 .assignment-info { margin-top: 12px; font-size: 0.9rem; }
+.assignment-info .prompt { white-space: pre-wrap; margin: 8px 0 0; }
 
-/* Question list in the assignment panel; same look as the submissions sidebar items. */
+/* Question list; same look as the submissions sidebar items. */
 .question-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .question-item {
   width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px;
@@ -124,15 +120,70 @@ textarea { font-family: Consolas, Menlo, monospace; font-size: 0.9rem; resize: v
 .question-item.add { justify-content: center; background: transparent; border-style: dashed; color: #555; }
 .question-item .item-meta { flex: none; }
 
-.panel-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.panel-header h2 { margin: 0; }
 .question-panel h3 { font-size: 0.95rem; margin: 16px 0 6px; }
-.sidebar-subtitle { margin-top: 2px; }
-.assignment-info .prompt { white-space: pre-wrap; margin: 8px 0 0; }
 
-.tests { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-.tests th, .tests td { border-bottom: 1px solid #ddd; padding: 6px; text-align: left; vertical-align: top; }
-.tests pre { margin: 0; font-family: Consolas, Menlo, monospace; white-space: pre-wrap; }
+/* Edit-question dropdown under the question panel header. Must follow .question-panel h3. */
+.edit-question { border: 1px solid #ccc; border-radius: 4px; background: #f7f7f7; padding: 10px 12px; margin-bottom: 12px; }
+.edit-question h3 { margin-top: 0; }
+.edit-question .stack { margin-top: 0; }
+
+.add-test { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; margin-top: 12px; }
+@container (max-width: 700px) {
+  .add-test { grid-template-columns: 1fr; }
+}
+
+/* ---------- Upload bar ---------- */
+
+.upload {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  margin: 16px 0; padding: 12px; background: #fff; border: 1px solid #ddd; border-radius: 6px;
+}
+.upload .label-input { width: 260px; max-width: 100%; }
+
+/* ---------- Review page ---------- */
+
+.status-row { margin-bottom: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; }
+.status-row .danger { margin-left: auto; }
+.status { font-weight: bold; padding: 1px 8px; border-radius: 4px; }
+.status-queued { background: #e2e3e5; }
+.status-processing { background: #cfe2ff; }
+.status-ready { background: #d1e7dd; }
+.status-error { background: #f8d7da; }
+.status-graded { background: #e0d4f5; }
+
+/* Photo left, code right. The two code panels stack first, so the photo stays
+   beside the code as long as possible. */
+.review { display: grid; grid-template-columns: minmax(280px, 1fr) 2fr; gap: 12px; }
+.code-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; min-width: 0; }
+@container (max-width: 1000px) {
+  .code-panels { grid-template-columns: 1fr; }
+}
+@container (max-width: 700px) {
+  .review { grid-template-columns: 1fr; }
+}
+
+.image-panel img { width: 100%; height: auto; border: 1px solid #ccc; display: block; }
+
+/* Code with a line-number gutter (CodeBlock). */
+.code {
+  margin: 0; padding: 8px 0; background: #fafafa; border: 1px solid #ddd;
+  font-family: Consolas, Menlo, monospace; font-size: 0.9rem; line-height: 1.5;
+  overflow-x: auto;
+}
+.code .line { display: flex; white-space: pre; }
+.code .gutter {
+  flex: none; width: 3em; padding-right: 0.75em; margin-right: 0.75em; text-align: right;
+  color: #999; user-select: none; border-right: 1px solid #ddd;
+}
+.code .line.uncertain { background: #fff3a8; }
+.code .line.uncertain .gutter { color: #8a6d00; font-weight: bold; }
+
+/* Editing code (CodeEditor), the model's original reading, and the syntax-fix change list. */
+.code-editor { display: flex; flex-direction: column; gap: 8px; }
+.code-editor textarea { width: 100%; box-sizing: border-box; white-space: pre; overflow-x: auto; tab-size: 4; line-height: 1.4; }
+.model-reading { margin-top: 8px; font-size: 0.9rem; }
+.model-reading summary { cursor: pointer; color: #555; }
+.fix-changes { margin: 0 0 8px; padding-left: 20px; font-size: 0.9rem; }
 
 /* Test results under the photo and code. */
 .results-panel { margin-top: 12px; }
@@ -147,15 +198,25 @@ textarea { font-family: Consolas, Menlo, monospace; font-size: 0.9rem; resize: v
 .result-pass { background: #d1e7dd; }
 .result-fail { background: #f8d7da; }
 
-.add-test { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; margin-top: 12px; }
-@container (max-width: 700px) {
-  .add-test { grid-template-columns: 1fr; }
-}
+/* Final score form under the test results. */
+.grade-panel { margin-top: 12px; }
+.grade-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; margin: 8px 0; }
+.grade-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
+.grade-fields label.grow { flex: 1; min-width: 200px; }
+.grade-fields input { width: 8em; }
 
-/* Submissions sidebar. Sticky so it stays in view while scrolling the review. */
+/* Raw JSON debug panel. */
+.raw { margin-top: 16px; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px 12px; }
+.raw summary { cursor: pointer; }
+.raw pre { overflow-x: auto; font-size: 0.85rem; }
+
+/* ---------- Submissions sidebar ---------- */
+
+/* Sticky so it stays in view while scrolling the review. */
 .sidebar { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; margin-top: 16px; }
 .sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sidebar-header h2 { margin: 0; }
+.sidebar-subtitle { margin-top: 2px; }
 .sidebar.collapsed { overflow: visible; }
 .sidebar-tab {
   width: 36px; padding: 12px 0; writing-mode: vertical-rl;
@@ -178,28 +239,9 @@ textarea { font-family: Consolas, Menlo, monospace; font-size: 0.9rem; resize: v
   .sidebar-tab { width: 100%; writing-mode: horizontal-tb; }
 }
 
-/* Destructive actions and their confirmation dialog. */
-button.danger { color: #8a1f1f; border: 1px solid #e5a0a0; background: #fde8e8; border-radius: 3px; cursor: pointer; }
-button.danger:hover:not(:disabled) { background: #f8d0d0; }
-.confirm { max-width: 440px; border: 1px solid #ddd; border-radius: 6px; padding: 16px; }
-.confirm::backdrop { background: rgb(0 0 0 / 0.35); }
-.confirm-message p, .confirm-message ul { margin: 8px 0; }
-.confirm-actions { justify-content: flex-end; margin-top: 12px; }
+/* ---------- Gradebook ---------- */
 
-.raw { margin-top: 16px; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px 12px; }
-.raw summary { cursor: pointer; }
-.raw pre { overflow-x: auto; font-size: 0.85rem; }
-
-/* Edit-question dropdown under the question panel header. */
-.edit-question { border: 1px solid #ccc; border-radius: 4px; background: #f7f7f7; padding: 10px 12px; margin-bottom: 12px; }
-.edit-question h3 { margin-top: 0; }
-.edit-question .stack { margin-top: 0; }
-
-/* Grading / Gradebook switch in the header. */
-.view-switch { display: flex; gap: 4px; margin-left: auto; }
-.view-switch button.active { background: #e7f0ff; border-color: #8fb3e8; font-weight: bold; }
-
-/* Gradebook: students down, assignments across. */
+/* Students down, assignments across. Must follow .tests, which it overrides. */
 .gradebook { margin-top: 16px; }
 .gradebook-filter { margin: 8px 0 12px; font-size: 0.9rem; }
 .gradebook-filter label.inline { display: flex; align-items: center; gap: 4px; }
@@ -209,23 +251,10 @@ button.danger:hover:not(:disabled) { background: #f8d0d0; }
 .gradebook-table .num { text-align: right; }
 .gradebook-table .max-row th { font-weight: normal; color: #666; }
 .gradebook-table .na { color: #888; border-bottom: 1px dotted #888; cursor: help; }
-.button-link {
-  display: inline-block; padding: 1px 8px; border: 1px solid #767676; border-radius: 3px;
-  background: #efefef; color: #000; text-decoration: none; font-size: 0.85rem;
-}
-.button-link:hover { background: #e5e5e5; }
 
-/* Final score form under the test results. */
-.grade-panel { margin-top: 12px; }
-.grade-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; margin: 8px 0; }
-.grade-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; }
-.grade-fields label.grow { flex: 1; min-width: 200px; }
-.grade-fields input { width: 8em; }
-.warn-text { color: #6b5200; }
+/* ---------- Confirmation dialog ---------- */
 
-/* Editing code on the review page. */
-.code-editor { display: flex; flex-direction: column; gap: 8px; }
-.code-editor textarea { width: 100%; box-sizing: border-box; white-space: pre; overflow-x: auto; tab-size: 4; line-height: 1.4; }
-.model-reading { margin-top: 8px; font-size: 0.9rem; }
-.model-reading summary { cursor: pointer; color: #555; }
-.fix-changes { margin: 0 0 8px; padding-left: 20px; font-size: 0.9rem; }
+.confirm { max-width: 440px; border: 1px solid #ddd; border-radius: 6px; padding: 16px; }
+.confirm::backdrop { background: rgb(0 0 0 / 0.35); }
+.confirm-message p, .confirm-message ul { margin: 8px 0; }
+.confirm-actions { justify-content: flex-end; margin-top: 12px; }

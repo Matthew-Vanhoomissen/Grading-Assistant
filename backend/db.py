@@ -1,12 +1,13 @@
-"""SQLite helpers for the five tables.
+"""SQLite storage for assignments, questions, tests, submissions, and results.
 
-Tables: assignments, questions, test_cases, submissions, test_results.
 An assignment has questions; each question has its own test cases, points,
-and submissions (one photo per student per question).
+and submissions (one photo per student per question). Each submission has
+test results for its original transcription and, optionally, a corrected
+version.
 
-Each helper opens its own connection, so the Flask request threads and the
-worker thread never share one. WAL mode lets them read while the other
-writes.
+Every helper opens its own connection, so the Flask request threads and the
+worker thread never share one. WAL mode lets readers proceed while another
+connection writes.
 """
 
 import json
@@ -68,7 +69,7 @@ CREATE TABLE IF NOT EXISTS test_results (
 );
 """
 
-# Assignment fields plus totals computed from its questions, so the total
+# Assignment columns plus totals computed from its questions, so the total
 # points can never drift from the sum of the question points.
 ASSIGNMENT_SELECT = """
 SELECT a.*,
@@ -78,8 +79,13 @@ FROM assignments a LEFT JOIN questions q ON q.assignment_id = a.id
 """
 
 
+# ---------------------------------------------------------------------------
+# Connections and setup
+# ---------------------------------------------------------------------------
+
 @contextmanager
 def connect():
+    """Yield a connection with foreign keys on, committing on success."""
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -91,10 +97,14 @@ def connect():
 
 
 def init_db():
+    """Create the data directory and any missing tables.
+
+    Raises RuntimeError for a database from before questions existed, since
+    CREATE TABLE IF NOT EXISTS can't migrate it and it would otherwise fail
+    later in confusing ways.
+    """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
-        # CREATE TABLE IF NOT EXISTS won't change existing tables, so a db
-        # from before questions existed would fail later in confusing ways.
         columns = {r["name"] for r in conn.execute(
             "PRAGMA table_info(submissions)")}
         if "assignment_id" in columns:
@@ -106,19 +116,21 @@ def init_db():
 
 
 def _rows(cursor):
+    """Return all rows as plain dicts."""
     return [dict(r) for r in cursor.fetchall()]
 
 
 def _row(cursor):
+    """Return the first row as a plain dict, or None."""
     r = cursor.fetchone()
     return dict(r) if r else None
 
 
 def _delete_submissions_where(conn, condition, params):
-    """Delete matching submissions and their results. Returns image paths.
+    """Delete matching submissions and their results; return image paths.
 
-    Children go first: foreign_keys is on, so parents can't be deleted while
-    rows still point at them.
+    Children are deleted first because foreign keys are enforced, so a
+    parent can't be removed while rows still reference it.
     """
     images = [r["image_path"] for r in _rows(conn.execute(
         f"SELECT image_path FROM submissions WHERE {condition}", params))]
@@ -128,9 +140,12 @@ def _delete_submissions_where(conn, condition, params):
     return images
 
 
+# ---------------------------------------------------------------------------
 # Assignments
+# ---------------------------------------------------------------------------
 
 def create_assignment(title, language="python"):
+    """Insert an assignment and return its id."""
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO assignments (title, language) VALUES (?, ?)",
@@ -139,12 +154,14 @@ def create_assignment(title, language="python"):
 
 
 def list_assignments():
+    """Return all assignments, oldest first, with question totals."""
     with connect() as conn:
         return _rows(conn.execute(
             ASSIGNMENT_SELECT + " GROUP BY a.id ORDER BY a.id"))
 
 
 def get_assignment(assignment_id):
+    """Return one assignment with question totals, or None."""
     with connect() as conn:
         return _row(conn.execute(
             ASSIGNMENT_SELECT + " WHERE a.id = ? GROUP BY a.id",
@@ -170,11 +187,16 @@ def delete_assignment(assignment_id):
     return images
 
 
+# ---------------------------------------------------------------------------
 # Questions
+# ---------------------------------------------------------------------------
 
 def create_question(assignment_id, max_points, title="", prompt="",
                     exact_match=False, position=None):
-    """Add a question. Without a position, it goes after the last one."""
+    """Insert a question and return its id.
+
+    Without a position, the question goes after the assignment's last one.
+    """
     with connect() as conn:
         if position is None:
             position = conn.execute(
@@ -189,19 +211,33 @@ def create_question(assignment_id, max_points, title="", prompt="",
 
 
 def list_questions(assignment_id):
+    """Return an assignment's questions in position order."""
     with connect() as conn:
         return _rows(conn.execute(
             "SELECT * FROM questions WHERE assignment_id = ?"
             " ORDER BY position, id", (assignment_id,)))
 
 
+def list_all_questions():
+    """Return every question, grouped by assignment in position order."""
+    with connect() as conn:
+        return _rows(conn.execute(
+            "SELECT * FROM questions ORDER BY assignment_id, position, id"))
+
+
 def get_question(question_id):
+    """Return one question, or None."""
     with connect() as conn:
         return _row(conn.execute(
             "SELECT * FROM questions WHERE id = ?", (question_id,)))
 
 
 def update_question(question_id, **fields):
+    """Update the given columns of a question.
+
+    Column names are interpolated into the SQL, so callers must pass only
+    trusted names, never keys taken straight from a request.
+    """
     columns = ", ".join(f"{name} = ?" for name in fields)
     with connect() as conn:
         conn.execute(f"UPDATE questions SET {columns} WHERE id = ?",
@@ -232,9 +268,12 @@ def delete_question(question_id):
     return images
 
 
+# ---------------------------------------------------------------------------
 # Test cases
+# ---------------------------------------------------------------------------
 
 def add_test_case(question_id, input_text, expected_output):
+    """Insert a test case and return its id."""
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO test_cases (question_id, input, expected_output)"
@@ -243,6 +282,7 @@ def add_test_case(question_id, input_text, expected_output):
 
 
 def delete_test_case(test_case_id):
+    """Delete a test case and every stored result for it."""
     with connect() as conn:
         conn.execute("DELETE FROM test_results WHERE test_case_id = ?",
                      (test_case_id,))
@@ -250,15 +290,19 @@ def delete_test_case(test_case_id):
 
 
 def list_test_cases(question_id):
+    """Return a question's test cases in creation order."""
     with connect() as conn:
         return _rows(conn.execute(
             "SELECT * FROM test_cases WHERE question_id = ? ORDER BY id",
             (question_id,)))
 
 
+# ---------------------------------------------------------------------------
 # Submissions
+# ---------------------------------------------------------------------------
 
 def create_submission(question_id, student_label, image_path):
+    """Insert a queued submission and return its id."""
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO submissions"
@@ -268,6 +312,7 @@ def create_submission(question_id, student_label, image_path):
 
 
 def list_submissions(question_id):
+    """Return a summary of each submission for a question, oldest first."""
     with connect() as conn:
         return _rows(conn.execute(
             "SELECT id, question_id, student_label, status, verdict,"
@@ -276,7 +321,18 @@ def list_submissions(question_id):
             (question_id,)))
 
 
+def list_gradebook_submissions():
+    """Return every submission's label, grade state, and question."""
+    with connect() as conn:
+        return _rows(conn.execute(
+            "SELECT s.student_label, s.status, s.final_score,"
+            " q.id AS question_id, q.assignment_id"
+            " FROM submissions s JOIN questions q ON q.id = s.question_id"
+            " ORDER BY s.id"))
+
+
 def get_submission(submission_id):
+    """Return one submission with flags decoded from JSON, or None."""
     with connect() as conn:
         sub = _row(conn.execute(
             "SELECT * FROM submissions WHERE id = ?", (submission_id,)))
@@ -286,6 +342,11 @@ def get_submission(submission_id):
 
 
 def update_submission(submission_id, **fields):
+    """Update the given columns of a submission, encoding flags as JSON.
+
+    Column names are interpolated into the SQL, so callers must pass only
+    trusted names, never keys taken straight from a request.
+    """
     if "flags" in fields and fields["flags"] is not None:
         fields["flags"] = json.dumps(fields["flags"])
     columns = ", ".join(f"{name} = ?" for name in fields)
@@ -295,30 +356,18 @@ def update_submission(submission_id, **fields):
 
 
 def delete_submission(submission_id):
-    """Delete a submission and its results. Returns its image path."""
+    """Delete a submission and its results; return its image path."""
     with connect() as conn:
         images = _delete_submissions_where(conn, "id = ?", (submission_id,))
     return images[0] if images else None
 
 
-def list_gradebook_submissions():
-    """Every submission's label, grade state, and where it belongs."""
-    with connect() as conn:
-        return _rows(conn.execute(
-            "SELECT s.student_label, s.status, s.final_score,"
-            " q.id AS question_id, q.assignment_id"
-            " FROM submissions s JOIN questions q ON q.id = s.question_id"
-            " ORDER BY s.id"))
-
-
-def list_all_questions():
-    with connect() as conn:
-        return _rows(conn.execute(
-            "SELECT * FROM questions ORDER BY assignment_id, position, id"))
-
-
 def claim_next_queued():
-    """Atomically move the oldest queued submission to processing."""
+    """Atomically move the oldest queued submission to processing.
+
+    Returns {"id": ...} for the claimed submission, or None if the queue is
+    empty.
+    """
     with connect() as conn:
         return _row(conn.execute(
             "UPDATE submissions"
@@ -328,16 +377,21 @@ def claim_next_queued():
 
 
 def requeue_stuck():
-    """Put back anything left 'processing' by a crash or restart."""
+    """Requeue submissions left in processing by a crash or restart."""
     with connect() as conn:
         conn.execute("UPDATE submissions SET status = 'queued'"
                      " WHERE status = 'processing'")
 
 
+# ---------------------------------------------------------------------------
 # Test results
+# ---------------------------------------------------------------------------
 
 def replace_test_results(submission_id, version, results):
-    """Store results for one version, replacing any earlier run of it."""
+    """Store one version's results, replacing any earlier run of it.
+
+    An empty list deletes that version's results.
+    """
     with connect() as conn:
         conn.execute("DELETE FROM test_results"
                      " WHERE submission_id = ? AND version = ?",
@@ -350,6 +404,11 @@ def replace_test_results(submission_id, version, results):
 
 
 def list_test_results(submission_id):
+    """Return a submission's results, each with its test's input and output.
+
+    Ordered by version, then by test case. "expected_output" is the test
+    case's expected output, joined in so the review screen needs one call.
+    """
     with connect() as conn:
         return _rows(conn.execute(
             "SELECT tr.*, tc.input, tc.expected_output FROM test_results tr"

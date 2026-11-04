@@ -1,8 +1,8 @@
 """Background thread that processes queued submissions one at a time.
 
-Polling SQLite every couple of seconds is simpler than a real queue (Redis,
-Celery) and plenty for a class of 50. One bad image sets that submission to
-'error' and the loop moves on.
+Polling SQLite every few seconds is simpler than a real queue (Redis,
+Celery) and fast enough for a class of 50. A failure on one submission sets
+it to error and the loop moves on to the next.
 """
 
 import threading
@@ -16,7 +16,11 @@ POLL_SECONDS = 2
 
 
 def process_next():
-    """Process one queued submission. Returns False if the queue is empty."""
+    """Process the oldest queued submission.
+
+    Returns False if the queue was empty. Any exception marks that
+    submission as an error, with the message stored for the review screen.
+    """
     claimed = db.claim_next_queued()
     if not claimed:
         return False
@@ -31,6 +35,7 @@ def process_next():
 
 
 def run_forever():
+    """Requeue interrupted work, then process the queue until shutdown."""
     db.requeue_stuck()
     while True:
         if not process_next():
@@ -38,6 +43,7 @@ def run_forever():
 
 
 def start():
+    """Start the worker in a daemon thread and return the thread."""
     thread = threading.Thread(target=run_forever, name="grader-worker",
                               daemon=True)
     thread.start()

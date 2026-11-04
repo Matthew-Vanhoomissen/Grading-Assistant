@@ -1,14 +1,27 @@
+/**
+ * Assignments screen: lists every assignment on the server with its question
+ * count and total points. Supports pull-to-refresh. A rejected token adds a
+ * shortcut back to the Connect screen, the only place it can be fixed.
+ */
+
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native';
 
 import { listAssignments } from '../api';
 import { Button, Message, Screen, formatPoints, styles } from '../ui';
 
+/**
+ * @param {object} props
+ * @param {import('../api').Settings} props.settings
+ * @param {(assignment: object) => void} props.onPick
+ * @param {() => void} props.onSettings Returns to the Connect screen.
+ */
 export default function AssignmentsScreen({ settings, onPick, onSettings }) {
-  const [assignments, setAssignments] = useState(null);
+  const [assignments, setAssignments] = useState(null); // null until the first load succeeds
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
 
+  /** Fetches the list. On failure the previous list stays visible. */
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);

@@ -1,9 +1,11 @@
-"""Process one submission end to end: transcribe, run tests, score.
+"""Grade one submission end to end: transcribe, run tests, and score.
 
-Shared by the worker and the command line. Failure investigation (agent.py)
-plugs in here later.
+Shared by the background worker and the command line. Also handles the
+professor's edits from the review screen: fixing a misread (which re-scores
+the original) and running a corrected version (comparison only).
 
-Usage: python -m backend.pipeline <image> <question_id> [student_label]
+Usage:
+    python -m backend.pipeline <image> <question_id> [student_label]
 """
 
 import sys
@@ -16,8 +18,16 @@ from backend.scoring import suggest_score
 from backend.transcribe import static_flags, transcribe
 
 
+# ---------------------------------------------------------------------------
+# Running and scoring tests
+# ---------------------------------------------------------------------------
+
 def run_tests(code, test_cases, exact_match=False):
-    """Run code against each test case. Returns a list of result dicts."""
+    """Run code in the sandbox against each test case.
+
+    Returns one dict per test with test_case_id, passed, actual_output, and
+    error (None, "Timed out", or the program's stderr).
+    """
     results = []
     for tc in test_cases:
         run = run_code(code, stdin=tc["input"])
@@ -35,7 +45,7 @@ def run_tests(code, test_cases, exact_match=False):
 
 
 def _score(question, results):
-    """Suggested score and verdict from one version's test results."""
+    """Return (suggested_score, verdict) for one version's test results."""
     passed = sum(r["passed"] for r in results)
     score, _ = suggest_score(question["max_points"], passed, len(results))
     # Until failure investigation exists, failed submissions get no verdict.
@@ -44,19 +54,26 @@ def _score(question, results):
 
 
 def _grade(submission_id, question, code):
-    """Run tests on code, store results, and set the suggested score."""
+    """Run and store the original version's tests; return (score, verdict)."""
     tests = db.list_test_cases(question["id"])
     results = run_tests(code, tests, bool(question["exact_match"]))
     db.replace_test_results(submission_id, "original", results)
     return _score(question, results)
 
 
-def rescore_question(question_id):
-    """Update stored results and scores after a question's points or
-    exact_match setting changes.
+def _run_corrected(submission_id, question, code):
+    """Run and store the corrected version's tests, leaving the original."""
+    tests = db.list_test_cases(question["id"])
+    db.replace_test_results(submission_id, "corrected", run_tests(
+        code, tests, bool(question["exact_match"])))
 
-    No code runs: pass/fail is re-checked against the saved actual_output
-    and error. Final scores the professor already set are left alone.
+
+def rescore_question(question_id):
+    """Re-score a question's submissions after points or exact_match change.
+
+    No code runs: pass/fail is re-checked against each result's saved
+    actual_output and error, for both versions. The suggested score still
+    comes from the original only, and final scores are left alone.
     """
     question = db.get_question(question_id)
     exact = bool(question["exact_match"])
@@ -77,14 +94,17 @@ def rescore_question(question_id):
                              verdict=verdict)
 
 
-def _run_corrected(submission_id, question, code):
-    """Run the corrected version's tests. Never touches the original."""
-    tests = db.list_test_cases(question["id"])
-    db.replace_test_results(submission_id, "corrected", run_tests(
-        code, tests, bool(question["exact_match"])))
-
+# ---------------------------------------------------------------------------
+# Worker processing
+# ---------------------------------------------------------------------------
 
 def process_submission(submission_id):
+    """Transcribe the photo, run the tests, and mark the submission ready.
+
+    With SYNTAX_FIX=1 and a transcription that doesn't parse, the model's
+    minimal syntax fix is also stored and tested as the corrected version.
+    Exceptions propagate so the worker can mark the submission as an error.
+    """
     sub = db.get_submission(submission_id)
     question = db.get_question(sub["question_id"])
     # A requeue starts fresh: an old corrected version described the old
@@ -106,7 +126,8 @@ def process_submission(submission_id):
         try:
             fix = agent.syntax_fix(code)
         except Exception:
-            # Optional step: the transcription and original results stand.
+            # The fix is optional; the transcription and original results
+            # still stand.
             traceback.print_exc()
             fix = None
         if fix:
@@ -119,13 +140,17 @@ def process_submission(submission_id):
                          verdict=verdict, status="ready", error_message=None)
 
 
-def rerun_submission(submission_id, code):
-    """Re-run tests after the professor fixes a misread on the review page.
+# ---------------------------------------------------------------------------
+# Professor edits from the review screen
+# ---------------------------------------------------------------------------
 
-    The edited code replaces the transcription and re-scores the original.
-    The model's first reading is kept in flags.model_transcription, and its
-    uncertain_lines (which refer to that reading) are kept as they are.
-    Static flags are recomputed. The corrected version is left alone.
+def rerun_submission(submission_id, code):
+    """Replace the transcription with the professor's fix and re-score it.
+
+    The model's first reading is saved once in flags.model_transcription,
+    and its uncertain_lines (which refer to that reading) are kept. Static
+    flags are recomputed, the final score is kept, and the corrected
+    version is left alone. A submission in error becomes ready.
     """
     sub = db.get_submission(submission_id)
     question = db.get_question(sub["question_id"])
@@ -147,8 +172,8 @@ def set_corrected(submission_id, code):
     """Store a professor-edited corrected version and run its tests.
 
     For comparison only: the transcription, scores, verdict, and status
-    don't change. syntax_fix is dropped because it described the model's
-    version, not this one.
+    don't change. flags.syntax_fix is removed because it described the
+    model's version, not this one.
     """
     sub = db.get_submission(submission_id)
     question = db.get_question(sub["question_id"])
@@ -159,6 +184,10 @@ def set_corrected(submission_id, code):
 
 
 def clear_corrected(submission_id):
+    """Remove the corrected version, its results, and flags.syntax_fix.
+
+    Does nothing if the submission doesn't exist.
+    """
     sub = db.get_submission(submission_id)
     if not sub:
         return
@@ -169,7 +198,12 @@ def clear_corrected(submission_id):
     db.update_submission(submission_id, corrected_code=None, flags=flags)
 
 
+# ---------------------------------------------------------------------------
+# Command line
+# ---------------------------------------------------------------------------
+
 def main():
+    """Process one photo for a question and print the results."""
     if len(sys.argv) < 3:
         sys.exit(__doc__)
     image, question_id = sys.argv[1], int(sys.argv[2])

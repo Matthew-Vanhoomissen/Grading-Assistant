@@ -1,13 +1,13 @@
-"""Run student code with stdin and a timeout, inside a Docker container.
+"""Run student code with stdin and a timeout, isolated in a Docker container.
 
-Each run gets a fresh container with no network, capped memory/CPU/process
-count, a read-only filesystem, no Linux capabilities, and an unprivileged
-user. The code is mounted read-only; only /tmp is writable.
+Each run gets a fresh container with no network, capped memory, CPU, and
+process count, a read-only filesystem, no Linux capabilities, and an
+unprivileged user. The code is mounted read-only; only /tmp is writable.
 
-If Docker isn't running, run_code raises instead of quietly falling back to
-the host. SANDBOX=subprocess opts into the old host subprocess runner, which
-has a timeout but no network or memory isolation; use it only for your own
-samples.
+If Docker isn't available, run_code raises SandboxUnavailable instead of
+quietly falling back to the host. SANDBOX=subprocess opts into a host
+subprocess runner, which has a timeout but no network or memory isolation;
+use it only with your own samples.
 """
 
 import os
@@ -28,16 +28,22 @@ PIDS_LIMIT = "64"
 DOCKER_STARTUP_GRACE = 20
 # Exit code from coreutils `timeout` when it stopped the program (SIGTERM).
 TIMEOUT_EXIT_CODE = 124
-# SIGKILL. Without `timeout -k`, this comes from the memory limit.
+# SIGKILL. Since `timeout` runs without -k, this comes from the memory limit.
 KILLED_EXIT_CODE = 137
+# Docker's own exit code when it fails to run the container at all.
+DOCKER_FAILED_EXIT_CODE = 125
 
 
 class SandboxUnavailable(RuntimeError):
-    pass
+    """Raised when Docker can't run the code (not installed, daemon down)."""
 
 
 def run_code(code, stdin="", timeout=DEFAULT_TIMEOUT):
-    """Run code as a script. Returns stdout, stderr, exit_code, timed_out."""
+    """Run code as a script with the given stdin.
+
+    Returns stdout, stderr, exit_code (None on timeout), and timed_out.
+    Output beyond MAX_OUTPUT_BYTES is truncated.
+    """
     with tempfile.TemporaryDirectory(prefix="grader_") as workdir:
         with open(os.path.join(workdir, "main.py"), "w",
                   encoding="utf-8") as f:
@@ -48,6 +54,7 @@ def run_code(code, stdin="", timeout=DEFAULT_TIMEOUT):
 
 
 def _run_docker(workdir, stdin, timeout):
+    """Run main.py from workdir in a locked-down, single-use container."""
     name = f"grader-{uuid.uuid4().hex[:12]}"
     command = [
         "docker", "run", "--rm", "-i", "--name", name,
@@ -59,8 +66,8 @@ def _run_docker(workdir, stdin, timeout):
         "--user", "65534:65534",
         "-v", f"{workdir}:/code:ro", "-w", "/code",
         DOCKER_IMAGE,
-        # The time limit is enforced inside the container so it doesn't
-        # count the ~1s of container startup against the student. If the
+        # The time limit is enforced inside the container so the ~1 s of
+        # container startup doesn't count against the student. If the
         # program ignores SIGTERM, the host-side timeout below kills it.
         "timeout", str(timeout), "python", "-I", "main.py",
     ]
@@ -77,8 +84,8 @@ def _run_docker(workdir, stdin, timeout):
 
     exit_code = run.returncode
     outputs = _read_outputs(workdir)
-    if exit_code == 125:
-        # 125 means docker itself failed (daemon down, bad image), not the
+    if exit_code == DOCKER_FAILED_EXIT_CODE:
+        # Docker itself failed (daemon down, missing image), not the
         # student's code.
         raise SandboxUnavailable(f"docker run failed: {outputs['stderr']}")
     if exit_code == KILLED_EXIT_CODE:
@@ -90,7 +97,8 @@ def _run_docker(workdir, stdin, timeout):
 
 
 def _run_subprocess(workdir, stdin, timeout):
-    # -X utf8 because -I ignores PYTHONIOENCODING.
+    """Run main.py on the host with a timeout. No isolation beyond that."""
+    # -X utf8 is needed because -I ignores PYTHONIOENCODING.
     command = [sys.executable, "-I", "-X", "utf8",
                os.path.join(workdir, "main.py")]
     try:
@@ -105,8 +113,11 @@ def _run_subprocess(workdir, stdin, timeout):
 
 
 def _run_to_files(workdir, command, stdin, timeout, env=None):
-    # Write output to files instead of pipes so an infinite print loop
-    # fills a file we only read the start of, not this process's memory.
+    """Run a command with its output redirected to files in workdir.
+
+    Files instead of pipes mean an infinite print loop fills a file we only
+    read the start of, not this process's memory.
+    """
     with open(os.path.join(workdir, "stdout.txt"), "wb") as out, \
             open(os.path.join(workdir, "stderr.txt"), "wb") as err:
         return subprocess.run(command, input=stdin.encode("utf-8"),
@@ -115,18 +126,20 @@ def _run_to_files(workdir, command, stdin, timeout, env=None):
 
 
 def _read_outputs(workdir):
+    """Return the captured stdout and stderr from workdir."""
     return {"stdout": _read_capped(os.path.join(workdir, "stdout.txt")),
             "stderr": _read_capped(os.path.join(workdir, "stderr.txt"))}
 
 
 def _read_capped(path):
+    """Read up to MAX_OUTPUT_BYTES of a file as text, marking truncation."""
     if not os.path.exists(path):
         return ""
     with open(path, "rb") as f:
         data = f.read(MAX_OUTPUT_BYTES + 1)
     text = data[:MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
-    # Windows writes \r\n to redirected stdout; normalize so exact-match
-    # comparisons don't depend on the host OS.
+    # Windows writes \r\n to redirected stdout; normalizing keeps exact-match
+    # comparisons independent of the host OS.
     text = text.replace("\r\n", "\n")
     if len(data) > MAX_OUTPUT_BYTES:
         text += "\n[output truncated]"
@@ -134,10 +147,11 @@ def _read_capped(path):
 
 
 def outputs_match(actual, expected, exact=False):
-    """Compare program output to the expected output.
+    """Return True if the program's output matches the expected output.
 
-    By default, trailing whitespace on each line and trailing blank lines are
-    ignored, since students and professors rarely agree on those.
+    By default, trailing whitespace on each line and trailing blank lines
+    are ignored, since students and professors rarely agree on those. With
+    exact=True, the strings must be identical.
     """
     if exact:
         return actual == expected
@@ -145,5 +159,6 @@ def outputs_match(actual, expected, exact=False):
 
 
 def _normalize(text):
+    """Strip trailing whitespace from each line and trailing blank lines."""
     lines = text.replace("\r\n", "\n").split("\n")
     return "\n".join(line.rstrip() for line in lines).rstrip("\n")

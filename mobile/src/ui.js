@@ -1,9 +1,20 @@
-// Small shared pieces: screen frame with a header, button, message box, and
-// status badge. Plain React Native components only.
+/**
+ * Shared UI building blocks and styles: the screen frame, button, message
+ * box, and status badge. Plain React Native components only, no UI kit.
+ */
 
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+/**
+ * Full-screen frame with a header bar, kept clear of the notch and home
+ * indicator.
+ *
+ * @param {object} props
+ * @param {string} props.title
+ * @param {() => void} [props.onBack] Shows a Back button when provided.
+ * @param {React.ReactNode} props.children
+ */
 export function Screen({ title, onBack, children }) {
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'left', 'right', 'bottom']}>
@@ -22,6 +33,17 @@ export function Screen({ title, onBack, children }) {
   );
 }
 
+/**
+ * Full-width button. While `loading`, it shows a spinner and ignores presses.
+ *
+ * @param {object} props
+ * @param {string} props.title
+ * @param {() => void} props.onPress
+ * @param {boolean} [props.disabled]
+ * @param {boolean} [props.loading]
+ * @param {'primary' | 'secondary'} [props.variant] Secondary is outlined.
+ * @param {object} [props.style] Extra style, e.g. styles.flex1 inside a row.
+ */
 export function Button({ title, onPress, disabled, loading, variant = 'primary', style }) {
   const inactive = disabled || loading;
   return (
@@ -47,7 +69,13 @@ export function Button({ title, onPress, disabled, loading, variant = 'primary',
   );
 }
 
-// kind: 'error' | 'success' | 'info'
+/**
+ * Colored message box. Renders nothing when there is no content.
+ *
+ * @param {object} props
+ * @param {'error' | 'success' | 'info'} [props.kind]
+ * @param {React.ReactNode} props.children
+ */
 export function Message({ kind = 'info', children }) {
   if (!children) return null;
   return (
@@ -57,6 +85,7 @@ export function Message({ kind = 'info', children }) {
   );
 }
 
+/** Badge color for each submission status from the server. */
 const STATUS_COLORS = {
   queued: '#6b7280',
   processing: '#1f5fbf',
@@ -65,6 +94,12 @@ const STATUS_COLORS = {
   error: '#b91c1c',
 };
 
+/**
+ * Pill showing a submission status. Unknown statuses render in gray.
+ *
+ * @param {object} props
+ * @param {string} props.status queued | processing | ready | graded | error
+ */
 export function StatusBadge({ status }) {
   return (
     <View style={[styles.badge, { backgroundColor: STATUS_COLORS[status] || '#6b7280' }]}>
@@ -73,12 +108,19 @@ export function StatusBadge({ status }) {
   );
 }
 
-// 10.0 -> "10", 7.5 -> "7.5"
+/**
+ * Formats a point value without trailing zeros, rounded to two decimals:
+ * 10.0 -> "10", 7.5 -> "7.5".
+ *
+ * @param {number | string} value
+ * @returns {string} "?" when the value is not a finite number.
+ */
 export function formatPoints(value) {
   const n = Number(value);
   return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : '?';
 }
 
+/** Styles shared by every screen. */
 export const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f5f6f8' },
   header: {

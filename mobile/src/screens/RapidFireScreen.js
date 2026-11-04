@@ -1,3 +1,14 @@
+/**
+ * Rapid fire capture: one student at a time across every question.
+ *
+ * The label is entered once, then each question is photographed in order.
+ * The camera opens on its own for each question, and Use photo uploads and
+ * moves on. Steps: 'label' -> 'shoot' (once per question) -> 'summary'.
+ *
+ * Each upload is awaited before advancing, so a failure is handled on the
+ * question it belongs to rather than discovered later.
+ */
+
 import { useEffect, useRef, useState } from 'react';
 import {
   Image,
@@ -16,34 +27,41 @@ import { PermissionError, deletePhoto, takePhoto } from '../photo';
 import { Button, Message, Screen, formatPoints, styles } from '../ui';
 import { questionTitle } from './QuestionsScreen';
 
+/** Summary label and color for each per-question outcome. */
 const RESULT_TEXT = { uploaded: 'Uploaded', skipped: 'Skipped', failed: 'Failed' };
 const RESULT_COLORS = { uploaded: '#15803d', skipped: '#6b7280', failed: '#b91c1c' };
 
-// One student at a time: enter the label once, then photograph every question
-// in order. The camera opens by itself for each question; "Use photo" uploads
-// and moves on. Steps: 'label' -> 'shoot' (per question) -> 'summary'.
+/**
+ * @param {object} props
+ * @param {import('../api').Settings} props.settings
+ * @param {{ title: string }} props.assignment
+ * @param {object[]} props.questions The assignment's questions in the order to
+ *   photograph them.
+ * @param {() => void} props.onBack
+ */
 export default function RapidFireScreen({ settings, assignment, questions, onBack }) {
-  const [step, setStep] = useState('label');
-  const [label, setLabel] = useState('');
+  const [step, setStep] = useState('label'); // 'label' | 'shoot' | 'summary'
+  const [label, setLabel] = useState(''); // text field contents
   const [student, setStudent] = useState(''); // label locked in for this run
-  const [checking, setChecking] = useState(false);
-  const [warning, setWarning] = useState(null);
-  const [index, setIndex] = useState(0);
-  const [photo, setPhoto] = useState(null);
-  const [busy, setBusy] = useState(false); // camera or image processing
+  const [checking, setChecking] = useState(false); // duplicate-label check in progress
+  const [warning, setWarning] = useState(null); // duplicate-label warning text
+  const [index, setIndex] = useState(0); // position in `questions`
+  const [photo, setPhoto] = useState(null); // { uri, width, height } of the cached JPEG
+  const [busy, setBusy] = useState(false); // camera open or image processing
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState(null); // { kind, text, openSettings? }
   const [results, setResults] = useState({}); // question id -> { status, text? }
 
   const question = questions[index];
 
-  // Delete any photo still in the cache when leaving the screen.
+  // Deletes any photo still in the cache when the screen unmounts. A ref is
+  // used because the cleanup runs after the last render's state is gone.
   const photoRef = useRef(null);
   photoRef.current = photo;
   useEffect(() => () => deletePhoto(photoRef.current && photoRef.current.uri), []);
 
-  // Open the camera once per question. Cancelling it leaves the Take photo
-  // and Skip buttons on screen rather than reopening it.
+  // Opens the camera once per question. If the user closes it, the Take photo
+  // and Skip buttons stay on screen instead of the camera reopening.
   const launchedFor = useRef(-1);
   useEffect(() => {
     if (step === 'shoot' && launchedFor.current !== index) {
@@ -52,6 +70,11 @@ export default function RapidFireScreen({ settings, assignment, questions, onBac
     }
   }, [step, index]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Validates the label and checks it against existing submissions. Starts
+   * the run if the label is new; otherwise shows a warning the user can
+   * override with Continue anyway.
+   */
   async function start() {
     const name = label.trim();
     if (!name) {
@@ -64,7 +87,8 @@ export default function RapidFireScreen({ settings, assignment, questions, onBac
     setChecking(true);
     try {
       // One photo per student per question, so a label that already has
-      // photos is usually a typo or a paper entered twice.
+      // photos is usually a typo or a paper entered twice. Labels are
+      // compared ignoring case and surrounding spaces, like the gradebook.
       const lists = await Promise.all(questions.map((q) => listSubmissions(settings, q.id)));
       const key = name.toLowerCase();
       const taken = questions.filter((q, i) =>
@@ -82,6 +106,11 @@ export default function RapidFireScreen({ settings, assignment, questions, onBac
     }
   }
 
+  /**
+   * Starts a run for one student at the first question.
+   *
+   * @param {string} name The trimmed student label.
+   */
   function begin(name) {
     setStudent(name);
     setResults({});
@@ -92,12 +121,13 @@ export default function RapidFireScreen({ settings, assignment, questions, onBac
     setStep('shoot');
   }
 
+  /** Opens the camera and shows the new photo in the preview. */
   async function capture() {
     setMessage(null);
     setBusy(true);
     try {
       const taken = await takePhoto();
-      if (!taken) return; // backed out of the camera
+      if (!taken) return; // camera closed without a photo
       deletePhoto(photoRef.current && photoRef.current.uri);
       setPhoto(taken);
     } catch (e) {
@@ -111,12 +141,17 @@ export default function RapidFireScreen({ settings, assignment, questions, onBac
     }
   }
 
+  /** Moves to the next question, or to the summary after the last one. */
   function advance() {
     setMessage(null);
     if (index + 1 >= questions.length) setStep('summary');
     else setIndex(index + 1);
   }
 
+  /**
+   * Uploads the photo for the current question and advances on success. On
+   * failure, stays on the question with the photo kept for Retry upload.
+   */
   async function upload() {
     setMessage(null);
     setUploading(true);
@@ -137,22 +172,26 @@ export default function RapidFireScreen({ settings, assignment, questions, onBac
     }
   }
 
+  /** Discards the current photo and opens the camera again. */
   function retake() {
     deletePhoto(photo && photo.uri);
     setPhoto(null);
     capture();
   }
 
+  /** Moves on without uploading, e.g. when the student left the question blank. */
   function skip() {
     deletePhoto(photo && photo.uri);
     setPhoto(null);
-    // Skipping after a failed upload keeps the failure visible in the summary.
+    // A failed upload stays "failed" rather than becoming "skipped", so the
+    // summary still shows it.
     setResults((r) =>
       r[question.id] && r[question.id].status === 'failed' ? r : { ...r, [question.id]: { status: 'skipped' } },
     );
     advance();
   }
 
+  /** Returns to an empty label field for the next paper. */
   function nextStudent() {
     setLabel('');
     setStudent('');
@@ -161,8 +200,11 @@ export default function RapidFireScreen({ settings, assignment, questions, onBac
   }
 
   const failedHere = question && results[question.id] && results[question.id].status === 'failed';
+  // Portrait 3:4 is the fallback when the photo's size is unknown.
   const aspect = photo && photo.width && photo.height ? photo.width / photo.height : 3 / 4;
 
+  // The header Back button is hidden mid-upload so leaving the screen can't
+  // delete the photo while it is being sent.
   return (
     <Screen title={`Rapid fire · ${assignment.title}`} onBack={uploading ? undefined : onBack}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -258,6 +300,7 @@ export default function RapidFireScreen({ settings, assignment, questions, onBac
             <>
               <Text style={styles.listTitle}>{student}: done</Text>
               {questions.map((q) => {
+                // Defensive default; every question is recorded before the summary.
                 const r = results[q.id] || { status: 'skipped' };
                 return (
                   <View key={q.id} style={styles.listItem}>

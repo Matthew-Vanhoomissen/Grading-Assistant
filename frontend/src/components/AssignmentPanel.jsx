@@ -1,12 +1,31 @@
+// Left setup panel: the selected assignment and its question list.
+
 import { useState } from 'react'
 import { api } from '../api.js'
 import { callApi } from '../callApi.js'
 import { fmtPoints, questionLabel } from '../format.js'
 import ConfirmDialog from './ConfirmDialog.jsx'
 
-// Left setup panel: the selected assignment's overview and its question list
-// (click to select, "+ Add question" to open the form in QuestionPanel), or
-// the create-assignment form. `detail` is GET /api/assignments/:id.
+/**
+ * Shows the selected assignment's question count, total points, and ordered
+ * question list (click one to select it; "+ Add question" opens the form in
+ * QuestionPanel), with a delete button. While `creating`, it shows the
+ * create-assignment form instead.
+ *
+ * @param {object} props
+ * @param {object | null} props.detail - GET /api/assignments/:id; null while loading.
+ * @param {number | null} props.assignmentId - The selected assignment.
+ * @param {boolean} props.creating - Show the create-assignment form.
+ * @param {(() => void) | null} props.onCancelCreate - Closes the form; null hides Cancel (nothing to go back to).
+ * @param {(row: object) => void} props.onCreated - Receives the new assignment.
+ * @param {(id: number) => void} props.onDeleted - Called after the assignment is deleted.
+ * @param {number | null} props.questionId - The selected question.
+ * @param {boolean} props.creatingQuestion - True while the add-question form is open.
+ * @param {(id: number) => void} props.onSelectQuestion - Selects a question.
+ * @param {() => void} props.onAddQuestion - Opens the add-question form.
+ * @param {string | null} props.loadError - Shown when the detail failed to load.
+ * @param {(label: string, body: any) => void} props.onResponse - Reports to the Raw JSON panel.
+ */
 export default function AssignmentPanel({
   detail,
   assignmentId,
@@ -33,14 +52,14 @@ export default function AssignmentPanel({
     return true
   }
 
-  // Count everything underneath first so the confirmation says exactly what will go.
+  /** Counts everything under the assignment so the confirmation says exactly what will be deleted. */
   async function askDelete() {
     let submissions = null
     try {
       const lists = await Promise.all(detail.questions.map((q) => api.listSubmissions(q.id)))
       submissions = lists.reduce((n, res) => n + res.body.length, 0)
     } catch {
-      // Count is informational; still allow the delete.
+      // The count is informational, so a failed lookup still allows the delete.
     }
     const tests = detail.questions.reduce((n, q) => n + q.test_cases.length, 0)
     setPendingDelete({ id: detail.id, title: detail.title, questions: detail.questions.length, tests, submissions })
@@ -55,6 +74,7 @@ export default function AssignmentPanel({
     if (res) onDeleted(id)
   }
 
+  /** "1 question", "3 questions"; "all ..." when the count is unknown. */
   const plural = (n, word) => `${n ?? 'all'} ${word}${n === 1 ? '' : 's'}`
 
   return (
@@ -78,7 +98,8 @@ export default function AssignmentPanel({
             </button>
           </div>
           <div className="assignment-info">
-            {plural(detail.question_count, 'question')} | Total points: <strong>{fmtPoints(detail.total_points)}</strong>
+            {plural(detail.question_count, 'question')} | Total points:{' '}
+            <strong>{fmtPoints(detail.total_points)}</strong>
           </div>
 
           <ul className="question-list">
@@ -123,7 +144,8 @@ export default function AssignmentPanel({
                 <li>{plural(pendingDelete.questions, 'question')}</li>
                 <li>{plural(pendingDelete.tests, 'test case')}</li>
                 <li>
-                  {plural(pendingDelete.submissions, 'submission')}, with their uploaded photos, test results, and scores
+                  {plural(pendingDelete.submissions, 'submission')}, with their uploaded photos, test results, and
+                  scores
                 </li>
               </ul>
               <p>This cannot be undone.</p>
@@ -140,6 +162,14 @@ export default function AssignmentPanel({
   )
 }
 
+/**
+ * Create-assignment form. Only the title is asked for; points, prompts, and
+ * test cases belong to questions.
+ *
+ * @param {object} props
+ * @param {(fields: {title: string}) => Promise<boolean>} props.onSubmit - Creates the assignment.
+ * @param {(() => void) | null} props.onCancel - Closes the form; null hides Cancel.
+ */
 function CreateAssignmentForm({ onSubmit, onCancel }) {
   const [title, setTitle] = useState('')
   const [saving, setSaving] = useState(false)

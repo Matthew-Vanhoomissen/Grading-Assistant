@@ -1,7 +1,12 @@
-"""Transcription of a handwritten program with Muse Spark.
+"""Transcribe a photo of a handwritten Python program with Muse Spark.
 
-Handwriting ambiguity is resolved charitably; programming mistakes are kept.
-Returns code, uncertain_lines, and static_flags.
+Handwriting ambiguity is resolved charitably, the way a professor reads a
+paper; programming mistakes are kept exactly, because they are what's being
+graded. Each transcription is paired with static checks from Python's ast
+module, which flag lines a grader should look at without another model call.
+
+Usage:
+    python -m backend.transcribe <image> [<image> ...]
 """
 
 import ast
@@ -10,6 +15,8 @@ import sys
 
 from backend.llm import DEFAULT_MODEL, ask_with_image
 
+# The prompt and schema are part of the cache key, so any edit to them
+# triggers fresh (paid) transcriptions.
 TRANSCRIBE_PROMPT = """\
 This photo shows a handwritten Python program written by a student.
 Transcribe it into the program the student meant to write, reading the
@@ -83,7 +90,11 @@ TRANSCRIPTION_SCHEMA = {
 
 
 def transcribe(image_path, model=DEFAULT_MODEL, use_cache=True):
-    """Return {"code", "uncertain_lines", "static_flags"} for one photo."""
+    """Transcribe one photo and run the static checks on the result.
+
+    Returns a dict with code, uncertain_lines (the model's own doubts), and
+    static_flags (from static_flags below).
+    """
     result = ask_with_image(TRANSCRIBE_PROMPT, image_path,
                             schema=TRANSCRIPTION_SCHEMA, model=model,
                             use_cache=use_cache)
@@ -92,17 +103,20 @@ def transcribe(image_path, model=DEFAULT_MODEL, use_cache=True):
 
 
 def static_flags(code):
-    """Flag lines a human should check, without calling the model.
+    """Return [{line, reason}] for lines a grader should check.
 
     Catches syntax errors and names that are used but never assigned. A name
     that matches an assigned one except for case (s vs S) is almost always an
     ambiguous glyph or a student typo; either way the grader should look.
+    ast.parse stops at the first syntax error, so code that doesn't parse
+    gets exactly one flag and no name checks.
     """
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
         return [{"line": e.lineno, "reason": f"syntax error: {e.msg}"}]
 
+    # First pass: every name the program binds anywhere, plus builtins.
     bound = set(dir(builtins))
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
@@ -114,6 +128,7 @@ def static_flags(code):
         elif isinstance(node, ast.alias):
             bound.add((node.asname or node.name).split(".")[0])
 
+    # Second pass: names that are read but never bound.
     flags = []
     for node in ast.walk(tree):
         if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
@@ -129,7 +144,6 @@ def static_flags(code):
 
 
 if __name__ == "__main__":
-    # Usage: python -m backend.transcribe samples/simple_python1.jpg [...]
     for path in sys.argv[1:]:
         result = transcribe(path)
         print(f"=== {path}")

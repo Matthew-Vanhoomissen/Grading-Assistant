@@ -1,14 +1,29 @@
+// Sidebar listing the selected question's submissions.
+
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 
 const REFRESH_MS = 3000
 const PENDING = ['queued', 'processing']
 
-// Right-hand panel listing the selected question's submissions. Refreshes
-// while anything is still queued or processing; `refreshKey` forces a reload
-// (e.g. after an upload). List responses are kept out of the Raw JSON panel so
-// background refreshes don't replace the submission being debugged.
-// `onRows` gets each loaded list (null while loading), for "Confirm & Next".
+/**
+ * Right-hand sidebar listing the selected question's submissions, with each
+ * one's status and score. It refreshes every few seconds while any submission
+ * is queued or processing, and can collapse to a narrow tab.
+ *
+ * List responses are kept out of the Raw JSON panel so background refreshes
+ * don't replace the submission being debugged.
+ *
+ * @param {object} props
+ * @param {number | null} props.questionId - Question whose submissions to list.
+ * @param {string | null} props.questionName - Shown under the heading.
+ * @param {number | null} props.selectedId - The submission open in the review.
+ * @param {(id: number) => void} props.onSelect - Opens a submission.
+ * @param {number} props.refreshKey - Changing it forces a reload (e.g. after an upload or grade).
+ * @param {boolean} props.open - Expanded or collapsed.
+ * @param {() => void} props.onToggle - Expands or collapses the sidebar.
+ * @param {(rows: object[] | null) => void} props.onRows - Receives each loaded list (null while loading), used for Confirm & Next.
+ */
 export default function SubmissionList({
   questionId,
   questionName,

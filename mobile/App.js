@@ -1,5 +1,16 @@
-// Capture-only client: connect, pick assignment, pick question, photograph,
-// label, submit. Screens are switched with plain state, no navigation library.
+/**
+ * Root component of the capture app.
+ *
+ * The phone is a capture-only client for the grader: it connects to the
+ * Flask server, lets the user pick an assignment and question, and uploads
+ * labelled photos. Everything else happens on the desktop.
+ *
+ * Navigation is plain state rather than a navigation library. The current
+ * screen is derived from which selections exist:
+ *
+ *   connect -> assignments -> questions -> capture   (one question, many students)
+ *                                     \-> rapid      (one student, every question)
+ */
 
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
@@ -13,13 +24,14 @@ import QuestionsScreen from './src/screens/QuestionsScreen';
 import RapidFireScreen from './src/screens/RapidFireScreen';
 import { loadSettings } from './src/storage';
 
+/** Holds the connection and selection state and renders the current screen. */
 export default function App() {
-  const [savedSettings, setSavedSettings] = useState(null); // what the Connect form starts with
+  const [savedSettings, setSavedSettings] = useState(null); // loaded from storage; prefills Connect
   const [settings, setSettings] = useState(null); // settings that passed the ping
   const [assignment, setAssignment] = useState(null);
   const [question, setQuestion] = useState(null);
-  const [rapidQuestions, setRapidQuestions] = useState(null); // set while in rapid fire mode
-  const [onConnect, setOnConnect] = useState(true);
+  const [rapidQuestions, setRapidQuestions] = useState(null); // non-null while in rapid fire mode
+  const [onConnect, setOnConnect] = useState(true); // true while the Connect screen is shown
 
   useEffect(() => {
     loadSettings().then(setSavedSettings);
@@ -36,6 +48,12 @@ export default function App() {
             ? 'questions'
             : 'capture';
 
+  /**
+   * Steps back one screen.
+   *
+   * @returns {boolean} False on the Connect screen, so the Android back button
+   *   falls through to its default behavior (leaving the app).
+   */
   function back() {
     if (screen === 'capture') setQuestion(null);
     else if (screen === 'rapid') setRapidQuestions(null);
@@ -45,7 +63,8 @@ export default function App() {
     return true;
   }
 
-  // Android hardware back steps back one screen instead of closing the app.
+  // Re-subscribed on every render so the handler always sees the current
+  // screen.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', back);
     return () => sub.remove();
@@ -63,6 +82,7 @@ export default function App() {
       <ConnectScreen
         initialSettings={settings || savedSettings}
         onConnected={(s) => {
+          // Selections belong to one server; drop them if the server changed.
           if (!settings || s.serverUrl !== settings.serverUrl) {
             setAssignment(null);
             setQuestion(null);

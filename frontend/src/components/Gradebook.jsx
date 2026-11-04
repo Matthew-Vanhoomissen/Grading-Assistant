@@ -1,10 +1,19 @@
+// Gradebook view: every student's total per assignment.
+
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
 import { fmtPoints } from '../format.js'
 
-// One row per student, one column per assignment (GET /api/gradebook). A cell
-// is the sum of the student's final scores on that assignment; when its score
-// is null it shows n/a with the reason as a tooltip.
+/**
+ * One row per student and one column per assignment, from GET /api/gradebook.
+ * A cell is the sum of the student's final scores on that assignment; when its
+ * score is null it shows "n/a" with the backend's reason as a tooltip.
+ * Checkboxes filter the columns, and Download CSV links to the same grid as a
+ * file with the same filter.
+ *
+ * @param {object} props
+ * @param {(label: string, body: any) => void} props.onResponse - Reports to the Raw JSON panel.
+ */
 export default function Gradebook({ onResponse }) {
   const [assignments, setAssignments] = useState(null) // filter choices
   const [selected, setSelected] = useState(null) // Set of assignment ids, or null for all
@@ -48,16 +57,17 @@ export default function Gradebook({ onResponse }) {
     }
   }, [idsKey, version])
 
+  /** Checks or unchecks one assignment in the filter. */
   function toggle(id) {
     const next = new Set(selected ?? assignments.map((a) => a.id))
     if (next.has(id)) next.delete(id)
     else next.add(id)
-    // Everything checked is the same as no filter.
+    // Everything checked is the same as no filter, which keeps the URLs clean.
     setSelected(next.size === assignments.length ? null : next)
   }
 
   const isChecked = (id) => selected == null || selected.has(id)
-  const checkedCount = selected ? selected.size : assignments?.length ?? 0
+  const checkedCount = selected ? selected.size : (assignments?.length ?? 0)
 
   return (
     <div className="panel gradebook">
@@ -86,11 +96,11 @@ export default function Gradebook({ onResponse }) {
               <input
                 type="checkbox"
                 checked={isChecked(a.id)}
-                // Keep at least one; an empty filter would mean "all" to the backend.
+                // Keep at least one checked: an empty filter would mean "all" to the backend.
                 disabled={isChecked(a.id) && checkedCount === 1}
                 onChange={() => toggle(a.id)}
               />
-              {/* Same rule as the column headers: add the id when titles repeat. */}
+              {/* Same rule as the backend's column headers: add the id when titles repeat. */}
               {assignments.filter((b) => b.title === a.title).length > 1 ? `${a.title} (#${a.id})` : a.title}
             </label>
           ))}
@@ -107,7 +117,9 @@ export default function Gradebook({ onResponse }) {
       {!grid && !error && <p className="placeholder">Loading gradebook...</p>}
       {grid && grid.columns.length === 0 && <p className="placeholder">No assignments with questions yet.</p>}
       {grid && grid.columns.length > 0 && grid.rows.length === 0 && (
-        <p className="placeholder">No submissions yet. Students show up here once a photo is uploaded under their name.</p>
+        <p className="placeholder">
+          No submissions yet. Students show up here once a photo is uploaded under their name.
+        </p>
       )}
       {grid && grid.columns.length > 0 && grid.rows.length > 0 && (
         <div className="gradebook-scroll">

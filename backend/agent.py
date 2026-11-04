@@ -1,9 +1,12 @@
-"""Failure investigation (single re-check call) and the optional minimal
-syntax fix.
+"""Model-assisted checks that go beyond transcription.
 
-The syntax fix is off unless SYNTAX_FIX=1. It only runs on code that doesn't
-parse: a logic bug is what's being graded, so code that parses is never
-"fixed". The fix is stored as the corrected version, for comparison only.
+Currently the optional minimal syntax fix. Failure investigation (a single
+photo re-check call per failed submission) is planned for this module.
+
+The syntax fix is off unless SYNTAX_FIX=1. It only runs on code that
+doesn't parse: a logic bug is what's being graded, so code that parses is
+never "fixed". A kept fix is stored as the corrected version, for comparison
+only.
 """
 
 import ast
@@ -15,6 +18,8 @@ from backend import llm
 # Deliberately loose while experimenting (see FOLLOWUPS.md).
 MAX_FIX_CHANGED_LINES = 1000
 
+# The prompt and schema are part of the cache key, so any edit to them
+# triggers fresh (paid) fixes.
 SYNTAX_FIX_PROMPT = """\
 This is a student's Python program, transcribed from handwriting. It has a \
 syntax error, so it does not run.
@@ -60,15 +65,17 @@ SYNTAX_FIX_SCHEMA = {
 
 
 def syntax_fix_enabled():
+    """Return True if SYNTAX_FIX=1 is set in the environment."""
     return os.environ.get("SYNTAX_FIX") == "1"
 
 
 def has_syntax_error(static_flags):
+    """Return True if the static checks found a syntax error."""
     return any(f["reason"].startswith("syntax error") for f in static_flags)
 
 
 def changed_line_count(before, after):
-    """Lines replaced, added, or removed between two versions."""
+    """Return the number of lines replaced, added, or removed."""
     matcher = difflib.SequenceMatcher(None, before.splitlines(),
                                       after.splitlines())
     return sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2
@@ -76,16 +83,18 @@ def changed_line_count(before, after):
 
 
 def syntax_fix(code):
-    """Ask the model for a minimal fix. Returns {code, changes} or None.
+    """Ask the model for a minimal syntax fix.
 
-    The fix is thrown away (None) unless it parses and changes at most
-    MAX_FIX_CHANGED_LINES lines. One call; the SDK's capped retries are the
-    only retries.
+    Returns {code, changes}, or None when the fix is thrown away: it must
+    parse, change at least one line, and change at most
+    MAX_FIX_CHANGED_LINES lines. The answer is cached by the code, so these
+    checks re-run against the cached answer for free. One call; the SDK's
+    capped retries are the only retries.
     """
     fix = llm.ask_json(SYNTAX_FIX_PROMPT.format(code=code), SYNTAX_FIX_SCHEMA)
     try:
         ast.parse(fix["code"])
-    except (SyntaxError, ValueError):  # ValueError: null bytes
+    except (SyntaxError, ValueError):  # ValueError covers null bytes.
         return None
     changed = changed_line_count(code, fix["code"])
     if changed == 0 or changed > MAX_FIX_CHANGED_LINES:

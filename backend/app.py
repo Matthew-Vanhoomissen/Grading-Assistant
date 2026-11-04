@@ -1,12 +1,15 @@
-"""Flask routes for assignments, questions, tests, uploads, and submissions.
+"""Flask API for assignments, questions, test cases, submissions, and grades.
 
-An assignment holds questions; each question holds its own test cases and
-submissions. Submission routes are keyed by submission id alone.
+An assignment holds ordered questions; each question holds its own test
+cases and submissions (one photo per student per question). Submission
+routes are keyed by submission id alone.
 
-Run with: python -m backend.app  (starts the API and the worker thread)
+Requests to /api/ from another machine (such as the phone app) must send an
+X-API-Token header matching API_TOKEN. Requests from this machine are exempt,
+so the desktop frontend and local tools need no token.
 
-Every /api/ request from another machine (e.g. a phone) must send
-X-API-Token matching API_TOKEN. Requests from this machine are exempt.
+Usage:
+    python -m backend.app    # starts the API and the background worker
 """
 
 import hmac
@@ -28,9 +31,10 @@ load_dotenv()
 
 UPLOAD_DIR = db.DATA_DIR / "uploads"
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-# Per request, so a batch of phone photos (5-15 MB each) fits. Photos are
-# downscaled to 2048 px before the model sees them, far under Meta's 50 MB
-# per-image limit, so this only guards the server's disk and memory.
+# Applies per request, so a batch of phone photos (5-15 MB each) fits.
+# Photos are downscaled to 2048 px before the model sees them, far under
+# Meta's 50 MB per-image limit, so this only protects the server's disk and
+# memory.
 MAX_UPLOAD_MB = 200
 MIN_TOKEN_LENGTH = 16
 REQUIRE_TOKEN_ALWAYS = 1
@@ -40,12 +44,17 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 app.config["API_TOKEN"] = os.environ.get("API_TOKEN", "")
 
 
+# ---------------------------------------------------------------------------
+# Access control and shared helpers
+# ---------------------------------------------------------------------------
+
 def _bad_request(message):
+    """Return a 400 response with a JSON error message."""
     return jsonify({"error": message}), 400
 
 
 def _is_loopback(host):
-    """True for 127.x.x.x, ::1, ::ffff:127.x.x.x, and 'localhost'."""
+    """Return True for 127.x.x.x, ::1, ::ffff:127.x.x.x, and 'localhost'."""
     if host == "localhost":
         return True
     try:
@@ -59,10 +68,11 @@ def _is_loopback(host):
 
 @app.before_request
 def check_token():
-    """Reject /api/ requests from other machines without the right token.
+    """Reject /api/ requests from other machines that lack the right token.
 
-    Uses the socket's address only. Forwarded headers are ignored because
-    any client can set them. An unset token matches nothing (fails closed).
+    Only the socket's address decides whether a request is local; forwarded
+    headers are ignored because any client can set them. An unset API_TOKEN
+    matches nothing, so the check fails closed.
     """
     if not request.path.startswith("/api/"):
         return None
@@ -77,16 +87,22 @@ def check_token():
 
 @app.errorhandler(413)
 def too_large(_):
+    """Return the upload size limit as JSON instead of Flask's HTML page."""
     return jsonify({"error": f"upload over {MAX_UPLOAD_MB} MB"}), 413
 
 
 @app.get("/api/ping")
 def ping():
-    """Lets a client tell a bad token (401) from an unreachable server."""
+    """Confirm the server is reachable and the token is valid.
+
+    Clients use it to tell a bad token (401) from an unreachable server
+    (timeout or refused connection).
+    """
     return jsonify({"ok": True, "server": "grader"})
 
 
 def _assignment_or_404(assignment_id):
+    """Return the assignment, or abort with 404 if it doesn't exist."""
     assignment = db.get_assignment(assignment_id)
     if not assignment:
         abort(404)
@@ -94,6 +110,7 @@ def _assignment_or_404(assignment_id):
 
 
 def _question_or_404(question_id):
+    """Return the question, or abort with 404 if it doesn't exist."""
     question = db.get_question(question_id)
     if not question:
         abort(404)
@@ -101,6 +118,7 @@ def _question_or_404(question_id):
 
 
 def _submission_or_404(submission_id):
+    """Return the submission, or abort with 404 if it doesn't exist."""
     sub = db.get_submission(submission_id)
     if not sub:
         abort(404)
@@ -108,6 +126,7 @@ def _submission_or_404(submission_id):
 
 
 def _question_with_tests(question):
+    """Attach the question's test cases under "test_cases" and return it."""
     question["test_cases"] = db.list_test_cases(question["id"])
     return question
 
@@ -115,8 +134,8 @@ def _question_with_tests(question):
 def _delete_upload(image_path):
     """Remove an uploaded photo. Files outside UPLOAD_DIR are left alone.
 
-    Submissions created from the CLI point at photos in samples/, which must
-    survive deleting the submission.
+    Submissions created from the command line point at photos in samples/,
+    which must survive deleting the submission.
     """
     if not image_path:
         return
@@ -125,10 +144,13 @@ def _delete_upload(image_path):
         path.unlink(missing_ok=True)
 
 
+# ---------------------------------------------------------------------------
 # Assignments
+# ---------------------------------------------------------------------------
 
 @app.post("/api/assignments")
 def create_assignment():
+    """Create an assignment and return its detail (201)."""
     body = request.get_json(silent=True) or {}
     if not body.get("title"):
         return _bad_request("title is required")
@@ -139,16 +161,18 @@ def create_assignment():
 
 @app.get("/api/assignments")
 def list_assignments():
+    """List all assignments with their question counts and total points."""
     return jsonify(db.list_assignments())
 
 
 @app.get("/api/assignments/<int:assignment_id>")
 def get_assignment(assignment_id):
+    """Return one assignment with its questions and their test cases."""
     return jsonify(_assignment_detail(assignment_id))
 
 
 def _assignment_detail(assignment_id):
-    """Assignment with its questions in order, each with its test cases."""
+    """Return the assignment with its ordered questions and test cases."""
     assignment = _assignment_or_404(assignment_id)
     assignment["questions"] = [_question_with_tests(q) for q in
                                db.list_questions(assignment_id)]
@@ -157,15 +181,22 @@ def _assignment_detail(assignment_id):
 
 @app.delete("/api/assignments/<int:assignment_id>")
 def delete_assignment(assignment_id):
+    """Delete an assignment, everything under it, and its uploaded photos."""
     for image_path in db.delete_assignment(assignment_id):
         _delete_upload(image_path)
     return "", 204
 
 
+# ---------------------------------------------------------------------------
 # Questions
+# ---------------------------------------------------------------------------
 
 @app.post("/api/assignments/<int:assignment_id>/questions")
 def create_question(assignment_id):
+    """Add a question to an assignment and return it (201).
+
+    Only max_points is required. Without a position, the question goes last.
+    """
     _assignment_or_404(assignment_id)
     body = request.get_json(silent=True) or {}
     try:
@@ -184,15 +215,17 @@ def create_question(assignment_id):
 
 @app.get("/api/questions/<int:question_id>")
 def get_question(question_id):
+    """Return one question with its test cases."""
     return jsonify(_question_with_tests(_question_or_404(question_id)))
 
 
 @app.patch("/api/questions/<int:question_id>")
 def update_question(question_id):
-    """Edit any of title, prompt, max_points, exact_match.
+    """Edit any of a question's title, prompt, max_points, or exact_match.
 
     Other keys (id, position, test_cases, ...) are ignored, so the frontend
-    can send back the whole question object.
+    can send back the whole question object. Changing max_points or
+    exact_match re-scores the question's submissions from stored outputs.
     """
     question = _question_or_404(question_id)
     body = request.get_json(silent=True) or {}
@@ -222,15 +255,19 @@ def update_question(question_id):
 
 @app.delete("/api/questions/<int:question_id>")
 def delete_question(question_id):
+    """Delete a question, everything under it, and its uploaded photos."""
     for image_path in db.delete_question(question_id):
         _delete_upload(image_path)
     return "", 204
 
 
+# ---------------------------------------------------------------------------
 # Test cases
+# ---------------------------------------------------------------------------
 
 @app.post("/api/questions/<int:question_id>/tests")
 def add_test_case(question_id):
+    """Add a test case to a question and return its id (201)."""
     _question_or_404(question_id)
     body = request.get_json(silent=True) or {}
     if "expected_output" not in body:
@@ -242,18 +279,22 @@ def add_test_case(question_id):
 
 @app.delete("/api/tests/<int:test_case_id>")
 def delete_test_case(test_case_id):
+    """Delete a test case and its stored results."""
     db.delete_test_case(test_case_id)
     return "", 204
 
 
+# ---------------------------------------------------------------------------
 # Uploads and submissions
+# ---------------------------------------------------------------------------
 
 @app.post("/api/questions/<int:question_id>/submissions")
 def upload_submissions(question_id):
-    """Multipart upload: one or more 'files', optional matching 'labels'.
+    """Queue uploaded photos as submissions and return their ids (201).
 
-    One photo per student for this question. Labels default to the file
-    name. Use anonymized labels, not real names.
+    Multipart form with one or more "files" and optional matching "labels".
+    Each photo is one student's answer to this question. Labels default to
+    the file name; use anonymized labels, not real names.
     """
     _question_or_404(question_id)
     files = request.files.getlist("files")
@@ -278,12 +319,18 @@ def upload_submissions(question_id):
 
 @app.get("/api/questions/<int:question_id>/submissions")
 def list_submissions(question_id):
+    """List a question's submissions with their status and scores."""
     _question_or_404(question_id)
     return jsonify(db.list_submissions(question_id))
 
 
 @app.get("/api/submissions/<int:submission_id>")
 def get_submission(submission_id):
+    """Return a submission with its question, assignment, and test results.
+
+    The server-side image path is removed; clients load the photo from the
+    /image route instead.
+    """
     sub = _submission_or_404(submission_id)
     question = db.get_question(sub["question_id"])
     assignment = db.get_assignment(question["assignment_id"])
@@ -302,11 +349,16 @@ def get_submission(submission_id):
 
 @app.get("/api/submissions/<int:submission_id>/image")
 def submission_image(submission_id):
+    """Return the submission's original photo."""
     return send_file(_submission_or_404(submission_id)["image_path"])
 
 
 def _busy(sub):
-    """409 while the worker owns a submission; it would overwrite edits."""
+    """Return a 409 response while the worker owns the submission, else None.
+
+    A queued or processing submission is about to be overwritten by the
+    worker, so an edit made now would be lost.
+    """
     if sub and sub["status"] in ("queued", "processing"):
         return jsonify(
             {"error": "submission is still queued/processing"}), 409
@@ -314,6 +366,7 @@ def _busy(sub):
 
 
 def _code_from_body():
+    """Return the "code" string from the JSON body, or None if missing."""
     body = request.get_json(silent=True) or {}
     code = body.get("code")
     return code if isinstance(code, str) else None
@@ -321,7 +374,11 @@ def _code_from_body():
 
 @app.post("/api/submissions/<int:submission_id>/rerun")
 def rerun(submission_id):
-    """Fix a misread: the edit replaces the transcription and re-scores."""
+    """Fix a misread: replace the transcription and re-score the original.
+
+    Returns the full submission, 400 without code, or 409 while queued or
+    processing.
+    """
     busy = _busy(_submission_or_404(submission_id))
     if busy:
         return busy
@@ -334,7 +391,11 @@ def rerun(submission_id):
 
 @app.post("/api/submissions/<int:submission_id>/corrected")
 def run_corrected(submission_id):
-    """Store and test a corrected version. For comparison only."""
+    """Store and test a corrected version, for comparison only.
+
+    Returns the full submission, 400 without code, or 409 while queued or
+    processing. Scores, verdict, and status are not changed.
+    """
     busy = _busy(_submission_or_404(submission_id))
     if busy:
         return busy
@@ -347,6 +408,11 @@ def run_corrected(submission_id):
 
 @app.delete("/api/submissions/<int:submission_id>/corrected")
 def discard_corrected(submission_id):
+    """Discard the corrected version and its test results.
+
+    Returns 204 even when there is nothing to discard, or 409 while queued
+    or processing.
+    """
     busy = _busy(db.get_submission(submission_id))
     if busy:
         return busy
@@ -356,7 +422,11 @@ def discard_corrected(submission_id):
 
 @app.post("/api/submissions/<int:submission_id>/requeue")
 def requeue(submission_id):
-    """Send a submission back through the worker, e.g. after an error."""
+    """Send a submission back through the worker, for example after an error.
+
+    Processing starts fresh from the photo, so any corrected version is
+    cleared.
+    """
     _submission_or_404(submission_id)
     db.update_submission(submission_id, status="queued", error_message=None)
     return "", 204
@@ -364,6 +434,11 @@ def requeue(submission_id):
 
 @app.post("/api/submissions/<int:submission_id>/grade")
 def grade(submission_id):
+    """Record the professor's final score and notes, and mark it graded.
+
+    Returns the full submission, 400 without a numeric final_score, or 409
+    while queued or processing. Notes are overwritten on every call.
+    """
     busy = _busy(_submission_or_404(submission_id))
     if busy:
         return busy
@@ -379,14 +454,20 @@ def grade(submission_id):
 
 @app.delete("/api/submissions/<int:submission_id>")
 def delete_submission(submission_id):
+    """Delete a submission, its test results, and its uploaded photo."""
     _delete_upload(db.delete_submission(submission_id))
     return "", 204
 
 
+# ---------------------------------------------------------------------------
 # Gradebook
+# ---------------------------------------------------------------------------
 
 def _assignment_filter():
-    """Ids from ?assignment_ids=1,2, None for all. Raises ValueError."""
+    """Return the ids from ?assignment_ids=1,2, or None for all assignments.
+
+    Raises ValueError if any id is not an integer.
+    """
     raw = request.args.get("assignment_ids")
     if not raw:
         return None
@@ -395,6 +476,7 @@ def _assignment_filter():
 
 @app.get("/api/gradebook")
 def get_gradebook():
+    """Return the student-by-assignment grade grid as JSON."""
     try:
         ids = _assignment_filter()
     except ValueError:
@@ -404,11 +486,12 @@ def get_gradebook():
 
 @app.get("/api/gradebook.csv")
 def download_gradebook():
+    """Return the same grade grid as a CSV download."""
     try:
         ids = _assignment_filter()
     except ValueError:
         return _bad_request("assignment_ids must be comma-separated integers")
-    # The BOM makes Excel read the file as UTF-8.
+    # A leading byte-order mark makes Excel read the file as UTF-8.
     return Response(
         "﻿" + gradebook.to_csv(gradebook.build(ids)),
         mimetype="text/csv",
@@ -416,8 +499,16 @@ def download_gradebook():
                  "attachment; filename=gradebook.csv"})
 
 
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
 def config_error(host, token):
-    """Why the server must not start with these settings, or None."""
+    """Return why the server must not start with these settings, or None.
+
+    Binding to a non-loopback address exposes the API to the network, which
+    requires a token of at least MIN_TOKEN_LENGTH characters.
+    """
     if _is_loopback(host):
         return None
     if len(token) < MIN_TOKEN_LENGTH:
@@ -429,6 +520,7 @@ def config_error(host, token):
 
 
 def main():
+    """Validate the configuration, then start the worker and the API."""
     host = os.environ.get("API_HOST", "127.0.0.1")
     port = int(os.environ.get("API_PORT", "5000"))
     error = config_error(host, app.config["API_TOKEN"])
@@ -436,7 +528,7 @@ def main():
         sys.exit(error)
     db.init_db()
     worker.start()
-    # The reloader would start a second worker thread, so keep it off.
+    # The reloader would start a second worker thread, so it stays off.
     app.run(host=host, port=port, debug=False, use_reloader=False)
 
 

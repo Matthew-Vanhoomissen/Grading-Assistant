@@ -1,16 +1,27 @@
+// Final score form on the review page.
+
 import { useState } from 'react'
 import { fmtPoints } from '../format.js'
 
-// Final score for one submission, under the test results. Pre-filled with the
-// saved final score, else the suggested score; the professor confirms or
-// changes it. Saving calls POST /api/submissions/:id/grade (via onSave), which
-// sets status to "graded" so the score counts in the gradebook.
-// Render with key={submission.id} so the form resets per submission.
+/**
+ * Final score and notes for one submission, shown under the test results. The
+ * score is pre-filled with the saved final score, else the suggested score, and
+ * the professor confirms or changes it. Saving sets the status to "graded",
+ * which is what the gradebook counts. Render with key={submission.id} so the
+ * form resets for each submission.
+ *
+ * @param {object} props
+ * @param {object} props.submission - The full submission from GET /api/submissions/:id.
+ * @param {boolean} props.pending - True while queued or processing; grading is disabled then.
+ * @param {boolean} props.hasNext - Whether Confirm & Next has an ungraded submission to open.
+ * @param {(fields: {final_score: number, notes: string | null}, next: boolean) => Promise<boolean>} props.onSave -
+ *   Saves the grade (POST /api/submissions/:id/grade); `next` also opens the next ungraded submission.
+ */
 export default function GradePanel({ submission, pending, hasNext, onSave }) {
   const { status, suggested_score, final_score, score_reasoning, question } = submission
   const maxPoints = question?.max_points
   const graded = status === 'graded'
-  // null until edited, so the pre-fill follows a re-score (e.g. after editing the question).
+  // Inputs stay null until edited, so the pre-fill follows a re-score (e.g. after the question is edited).
   const [scoreInput, setScoreInput] = useState(null)
   const [notesInput, setNotesInput] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -19,14 +30,15 @@ export default function GradePanel({ submission, pending, hasNext, onSave }) {
   const score = scoreInput ?? (prefill == null ? '' : String(prefill))
   const notes = notesInput ?? submission.notes ?? ''
   const overMax = score !== '' && maxPoints != null && Number(score) > maxPoints
-  // What the corrected version would score with the same formula, to help decide partial credit.
+  // What the corrected version would score with the backend's formula, to help decide partial credit.
   const corrected = (submission.test_results ?? []).filter((r) => r.version === 'corrected')
   const correctedPassed = corrected.filter((r) => r.passed).length
   const correctedScore = corrected.length && maxPoints != null ? (maxPoints * correctedPassed) / corrected.length : null
 
+  /** Saves the grade; on success the inputs reset to follow the saved values. */
   async function save(next) {
     setSaving(true)
-    // The backend overwrites notes on every grade, so always send them.
+    // The backend overwrites notes on every grade, so they are always sent.
     const ok = await onSave({ final_score: Number(score), notes: notes.trim() || null }, next)
     setSaving(false)
     if (ok) {
@@ -99,10 +111,12 @@ export default function GradePanel({ submission, pending, hasNext, onSave }) {
           type="button"
           disabled={saving || score === '' || !hasNext}
           onClick={(e) => {
-            // Same validation as the submit button (e.g. no negative scores).
+            // This is not a submit button, so run the form's validation (e.g. no negative scores) by hand.
             if (e.currentTarget.form.reportValidity()) save(true)
           }}
-          title={hasNext ? 'Save and open the next ungraded submission' : 'No other ungraded submissions for this question'}
+          title={
+            hasNext ? 'Save and open the next ungraded submission' : 'No other ungraded submissions for this question'
+          }
         >
           {graded ? 'Update & Next' : 'Confirm & Next'}
         </button>

@@ -1,3 +1,9 @@
+/**
+ * Recent uploads list for one question: each submission's label and status,
+ * newest first. Polls while anything is queued or processing, so the user
+ * can watch photos move through the server's pipeline.
+ */
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 
@@ -5,15 +11,22 @@ import { listSubmissions } from '../api';
 import { POLL_MS } from '../config';
 import { StatusBadge, styles } from '../ui';
 
+/** Maximum number of rows rendered; the list lives inside a ScrollView. */
 const SHOWN = 30;
 
-// Status of the selected question's submissions. Polls while anything is
-// queued or processing. Bump `refreshKey` to reload right after an upload.
+/**
+ * @param {object} props
+ * @param {import('../api').Settings} props.settings
+ * @param {number} props.questionId
+ * @param {number} props.refreshKey Change it to reload immediately, e.g.
+ *   right after an upload.
+ */
 export default function RecentUploads({ settings, questionId, refreshKey }) {
-  const [items, setItems] = useState(null);
+  const [items, setItems] = useState(null); // null until the first load succeeds
   const [error, setError] = useState(null);
-  const inFlight = useRef(false);
+  const inFlight = useRef(false); // stops polls from overlapping on a slow network
 
+  /** Fetches the list. On failure the last good list stays visible. */
   const load = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;

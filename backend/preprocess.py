@@ -1,1 +1,4 @@
-"""OpenCV cleanup for photos. Only keep steps that measurably improve transcription."""
+"""OpenCV cleanup for photos before transcription (not implemented yet).
+
+Only steps that measurably improve transcription accuracy belong here.
+"""

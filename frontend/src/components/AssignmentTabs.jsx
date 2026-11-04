@@ -1,9 +1,21 @@
+// Tab bar for switching between assignments.
+
 import { useEffect, useRef } from 'react'
 import { fmtPoints } from '../format.js'
 
-// Horizontal tab bar for switching assignments. The tabs scroll sideways when
-// there are more than fit (the active one is scrolled into view); "+ New" sits
-// outside the scrolling part so it is always visible.
+/**
+ * Horizontal tab bar across the top of the Grading view. Tabs scroll sideways
+ * when they overflow and the active one is kept in view. "+ New assignment"
+ * sits outside the scrolling area so it is always visible.
+ *
+ * @param {object} props
+ * @param {object[] | null} props.assignments - Rows from GET /api/assignments; null while loading.
+ * @param {number | null} props.selectedId - The open assignment.
+ * @param {boolean} props.creating - True while the create-assignment form is open.
+ * @param {string | null} props.error - Shown instead of the tabs when the list failed to load.
+ * @param {(id: number) => void} props.onSelect - Called with the clicked tab's assignment id.
+ * @param {() => void} props.onNew - Opens the create-assignment form.
+ */
 export default function AssignmentTabs({ assignments, selectedId, creating, error, onSelect, onNew }) {
   const activeRef = useRef(null)
 
