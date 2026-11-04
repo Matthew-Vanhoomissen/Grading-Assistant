@@ -14,7 +14,6 @@ Known issues to look into later. Nothing here blocks the current slice.
 ## Syntax fix (`backend/agent.py`)
 
 - **Changed-line limit is effectively off.** The brief called for at most 3 changed lines (counted with difflib), so that a "fix" can't quietly rewrite the student's program. `MAX_FIX_CHANGED_LINES` is set to 1000 for now so we can experiment with real fixes and pick a number. Watch out: an indentation error can need a whole block re-indented, which a limit of 3 would throw away.
-- **Not cached.** `llm.ask_json` makes a fresh call every time. Requeueing a submission with `SYNTAX_FIX=1` pays for the fix again. Planned: cache on disk by a hash of the code, prompt, schema, and model, like `ask_with_image` does for photos.
 - **Discarded fixes leave no trace.** When a fix doesn't parse or changes too many lines, `corrected_code` stays null and nothing records that an attempt was made. Logging the reason (or storing it in `flags`) would help while tuning the limit.
 
 ## API

@@ -1,6 +1,9 @@
-"""Meta Model API client with an on-disk cache keyed by image hash.
+"""Meta Model API client with an on-disk response cache.
 
-Uses the OpenAI SDK pointed at https://api.meta.ai/v1.
+Uses the OpenAI SDK pointed at https://api.meta.ai/v1. Each cache file in
+data/cache/ is named by a hash of everything sent (image bytes or code,
+prompt, schema, model) and holds the model's answer, so the same request
+never costs twice. Delete a file, or the folder, to force a fresh call.
 """
 
 import base64
@@ -54,14 +57,45 @@ def _json_format(schema):
                        "schema": schema["schema"], "strict": True}}
 
 
-def ask_json(prompt, schema, model=DEFAULT_MODEL):
+def _cache_path(key_parts):
+    key_source = json.dumps(key_parts)
+    return CACHE_DIR / (hashlib.sha256(key_source.encode()).hexdigest()
+                        + ".json")
+
+
+def _read_cache(cache_path):
+    if cache_path.exists():
+        return json.loads(cache_path.read_text(encoding="utf-8"))["result"]
+    return None
+
+
+def _write_cache(cache_path, response, result, **info):
+    """Save the answer plus the model, token usage, and any extra info."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    usage = response.usage.model_dump() if response.usage else None
+    entry = {**info, "usage": usage, "result": result}
+    cache_path.write_text(json.dumps(entry, indent=2), encoding="utf-8")
+
+
+def ask_json(prompt, schema, model=DEFAULT_MODEL, use_cache=True):
     """Text-only request with structured output. Returns parsed JSON.
 
-    Not cached yet (see FOLLOWUPS.md).
+    Cached by the prompt (which includes the student's code), schema, and
+    model. The raw answer is cached; callers validate it afterwards, so
+    changing a validation rule doesn't need a new call.
     """
+    cache_path = _cache_path(["text", prompt, schema, model])
+    if use_cache:
+        cached = _read_cache(cache_path)
+        if cached is not None:
+            return cached
+
     response = get_client().responses.create(
         model=model, input=prompt, text=_json_format(schema))
-    return json.loads(response.output_text)
+    result = json.loads(response.output_text)
+    _write_cache(cache_path, response, result, kind="text", model=model,
+                 schema=schema["name"])
+    return result
 
 
 def image_to_data_url(image_path, max_side=MAX_IMAGE_SIDE):
@@ -92,13 +126,14 @@ def ask_with_image(prompt, image_path, schema=None, model=DEFAULT_MODEL,
     on disk keyed by the image hash plus the prompt, schema, and model, so
     the transcription and re-check prompts for one photo don't collide.
     """
-    key_source = json.dumps(
+    # Same key shape as before the shared helpers, so existing cached
+    # transcriptions still hit.
+    cache_path = _cache_path(
         [image_hash(image_path), prompt, schema, model, MAX_IMAGE_SIDE])
-    key = hashlib.sha256(key_source.encode()).hexdigest()
-    cache_path = CACHE_DIR / (key + ".json")
-    if use_cache and cache_path.exists():
-        cached = json.loads(cache_path.read_text(encoding="utf-8"))
-        return cached["result"]
+    if use_cache:
+        cached = _read_cache(cache_path)
+        if cached is not None:
+            return cached
 
     request = {
         "model": model,
@@ -117,12 +152,8 @@ def ask_with_image(prompt, image_path, schema=None, model=DEFAULT_MODEL,
     response = get_client().responses.create(**request)
     text = response.output_text
     result = json.loads(text) if schema else text
-
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    usage = response.usage.model_dump() if response.usage else None
-    entry = {"image": str(image_path), "model": model, "usage": usage,
-             "result": result}
-    cache_path.write_text(json.dumps(entry, indent=2), encoding="utf-8")
+    _write_cache(cache_path, response, result, image=str(image_path),
+                 model=model)
     return result
 
 

@@ -36,6 +36,30 @@ python -m backend.pipeline <image> <question_id>          # one submission, CLI
 Runtime data (SQLite db, uploaded photos, API response cache) lives in
 `backend/data/`, which is gitignored.
 
+### Model response cache
+
+Every model call is cached in `backend/data/cache/`, one JSON file per
+request, so repeating a request costs nothing and returns the same answer.
+That keeps requeues free, keeps the demo repeatable, and lets photos that
+were already processed replay without Wi-Fi.
+
+| Call | File named by a hash of | File holds |
+|---|---|---|
+| Transcription | photo bytes, prompt, schema, model, resize limit | answer, photo path, model, token usage |
+| Syntax fix | prompt (which includes the student's code), schema, model | answer, model, token usage |
+
+- The student label, question, and assignment are not part of the key. The
+  same photo file uploaded twice hits the cache; a new photo of the same page
+  has different bytes, so it doesn't.
+- Changing a prompt, schema, or model makes new keys automatically. Old
+  files stay on disk but are no longer used.
+- Only the model's raw answer is cached. The syntax fix's checks (it must
+  parse, `MAX_FIX_CHANGED_LINES`) run after the lookup, so changing the
+  limit and requeueing re-checks the saved answer without a new call.
+- Failed calls are not cached.
+- To get a fresh answer, delete that file (or the whole folder) and requeue.
+  Code can also pass `use_cache=False`.
+
 ## Data model
 
 An assignment has questions. Each question has its own points, test cases,
@@ -110,7 +134,9 @@ parse, asking for the smallest change that makes it parse. The fix is kept
 as the corrected version only if it parses and changes at most
 `MAX_FIX_CHANGED_LINES` lines (`backend/agent.py`); otherwise it's thrown
 away. It never runs on code that parses, because a logic bug is what's being
-graded. If the call fails, the submission is still `ready`.
+graded. If the call fails, the submission is still `ready`. The answer is
+cached by the code, so requeueing the same submission doesn't pay again (see
+"Model response cache").
 
 ### Gradebook
 
