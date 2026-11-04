@@ -352,7 +352,7 @@ export default function App() {
       {view === 'gradebook' && (
         <>
           <Gradebook onResponse={(label, body) => setRaw({ label, body })} />
-          {rawPanel}
+          
         </>
       )}
 
@@ -483,7 +483,7 @@ export default function App() {
                 onCancel={() => setConfirmingDelete(false)}
               />
 
-              {rawPanel}
+              
             </div>
 
             <SubmissionList
