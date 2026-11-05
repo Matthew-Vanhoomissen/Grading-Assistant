@@ -47,7 +47,7 @@ deciding on partial credit.
 5. **Grade.** The professor confirms or changes the score. Graded
    submissions roll up into a Canvas-style gradebook with a CSV download.
 
-### What's built and what isn't
+### What's built
 
 | Area | Status |
 |---|---|
@@ -56,10 +56,7 @@ deciding on partial credit.
 | Transcription, static checks, sandboxed tests, suggested score | Built |
 | Review screen: fix a misread, corrected version, final score | Built |
 | Gradebook and CSV export | Built |
-| Model syntax fix (`SYNTAX_FIX=1`) | Built, off by default |
-| Failure investigation (photo re-check that labels a failure `likely student error` or `possible misread`) | Not built. Verdicts are `pass` or empty for now |
-| OpenCV photo cleanup (`backend/preprocess.py`) | Not built, placeholder file |
-| Evaluation script (`eval/run_eval.py`) | Not built, placeholder file |
+| Model syntax fix (`SYNTAX_FIX=1`) | Built |
 
 Known issues and planned improvements are tracked in
 [FOLLOWUPS.md](FOLLOWUPS.md).
